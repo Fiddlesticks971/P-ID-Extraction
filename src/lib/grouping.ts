@@ -42,20 +42,38 @@ function iou(a: Bbox, b: Bbox): number {
   return union > 0 ? intersection / union : 0;
 }
 
+interface CompiledPattern {
+  pattern: TagPattern;
+  regex: RegExp;
+}
+
+/**
+ * Compiles the enabled patterns once up front. tryMatch runs for every word
+ * and every stacked word pair, so building the RegExp objects inside it
+ * meant re-compiling the same handful of patterns thousands of times per
+ * extraction.
+ */
+function compileEnabledPatterns(patterns: TagPattern[]): CompiledPattern[] {
+  const compiled: CompiledPattern[] = [];
+  for (const pattern of patterns) {
+    if (!pattern.enabled) continue;
+    const regex = compilePattern(pattern);
+    if (regex) compiled.push({ pattern, regex });
+  }
+  return compiled;
+}
+
 function tryMatch(
   text: string,
   bbox: Bbox,
   confidence: number,
   page: number,
-  patterns: TagPattern[],
+  patterns: CompiledPattern[],
 ): Candidate | null {
   const normalized = text.toUpperCase();
   let best: Candidate | null = null;
 
-  for (const pattern of patterns) {
-    if (!pattern.enabled) continue;
-    const regex = compilePattern(pattern);
-    if (!regex) continue;
+  for (const { pattern, regex } of patterns) {
     regex.lastIndex = 0;
     const match = regex.exec(normalized);
     if (!match) continue;
@@ -107,10 +125,12 @@ export function extractTagCandidates(
   stackGapFactor: number,
 ): Candidate[] {
   const candidates: Candidate[] = [];
+  const compiled = compileEnabledPatterns(patterns);
+  if (compiled.length === 0) return [];
 
   // Single-word matches.
   for (const word of words) {
-    const match = tryMatch(word.text, word.bbox, word.confidence, word.page, patterns);
+    const match = tryMatch(word.text, word.bbox, word.confidence, word.page, compiled);
     if (match) candidates.push(match);
   }
 
@@ -124,34 +144,34 @@ export function extractTagCandidates(
   for (const [page, pageWords] of pages) {
     const buckets = bucketByX(pageWords, 80);
     for (const [key, bucketWords] of buckets) {
-      const neighbors = [
-        ...bucketWords,
-        ...(buckets.get(key - 1) ?? []),
-        ...(buckets.get(key + 1) ?? []),
-      ];
+      // Same bucket plus its two horizontal neighbours, walked in place
+      // rather than merged into a new array for every bucket.
+      const neighborLists = [bucketWords, buckets.get(key - 1), buckets.get(key + 1)];
       for (const top of bucketWords) {
         const topHeight = top.bbox.y1 - top.bbox.y0;
         const maxGap = topHeight * stackGapFactor;
-        for (const bottom of neighbors) {
-          if (bottom === top) continue;
-          const gap = bottom.bbox.y0 - top.bbox.y1;
-          if (gap < -2 || gap > maxGap) continue;
-          const overlapX =
-            Math.min(top.bbox.x1, bottom.bbox.x1) - Math.max(top.bbox.x0, bottom.bbox.x0);
-          const minWidth = Math.min(
-            top.bbox.x1 - top.bbox.x0,
-            bottom.bbox.x1 - bottom.bbox.x0,
-          );
-          if (minWidth <= 0 || overlapX / minWidth < 0.3) continue;
+        for (const list of neighborLists) {
+          if (!list) continue;
+          for (const bottom of list) {
+            if (bottom === top) continue;
+            const gap = bottom.bbox.y0 - top.bbox.y1;
+            if (gap < -2 || gap > maxGap) continue;
+            const overlapX =
+              Math.min(top.bbox.x1, bottom.bbox.x1) - Math.max(top.bbox.x0, bottom.bbox.x0);
+            const minWidth = Math.min(
+              top.bbox.x1 - top.bbox.x0,
+              bottom.bbox.x1 - bottom.bbox.x0,
+            );
+            if (minWidth <= 0 || overlapX / minWidth < 0.3) continue;
 
-          const bbox = unionBbox(top.bbox, bottom.bbox);
-          const confidence = Math.min(top.confidence, bottom.confidence);
-          for (const combined of [
-            `${top.text}-${bottom.text}`,
-            `${top.text}${bottom.text}`,
-          ]) {
-            const match = tryMatch(combined, bbox, confidence, page, patterns);
-            if (match) candidates.push(match);
+            const bbox = unionBbox(top.bbox, bottom.bbox);
+            const confidence = Math.min(top.confidence, bottom.confidence);
+            const dashed = `${top.text}-${bottom.text}`;
+            const joined = `${top.text}${bottom.text}`;
+            const dashedMatch = tryMatch(dashed, bbox, confidence, page, compiled);
+            if (dashedMatch) candidates.push(dashedMatch);
+            const joinedMatch = tryMatch(joined, bbox, confidence, page, compiled);
+            if (joinedMatch) candidates.push(joinedMatch);
           }
         }
       }

@@ -82,6 +82,7 @@ export function detectCircles(
   // box-averaging is deterministic and avoids that.
   const gray = new Float32Array(w * h);
   const fullWidth = source.width;
+  const boxScale = 1 / (3 * ds * ds);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       let sum = 0;
@@ -89,16 +90,29 @@ export function detectCircles(
         const rowStart = ((y * ds + sy) * fullWidth + x * ds) * 4;
         for (let sx = 0; sx < ds; sx++) {
           const i = rowStart + sx * 4;
-          sum += (full[i] + full[i + 1] + full[i + 2]) / 3;
+          sum += full[i] + full[i + 1] + full[i + 2];
         }
       }
-      gray[y * w + x] = sum / (ds * ds);
+      gray[y * w + x] = sum * boxScale;
     }
   }
 
-  const gx = new Float32Array(w * h);
-  const gy = new Float32Array(w * h);
-  const mag = new Float32Array(w * h);
+  // Sobel and edge collection are fused into one pass, and edges are kept in
+  // parallel typed arrays rather than an array of objects: this is the array
+  // the voting loop below walks once per radius, so avoiding ~n object
+  // allocations and the pointer chasing that comes with them matters. The
+  // magnitude test is done squared so the sqrt only runs for actual edge
+  // pixels (a few percent of the image) rather than every pixel.
+  const EDGE_THRESHOLD = 60;
+  const EDGE_THRESHOLD_SQ = EDGE_THRESHOLD * EDGE_THRESHOLD;
+  let edgeCapacity = 4096;
+  let edgeX = new Int32Array(edgeCapacity);
+  let edgeY = new Int32Array(edgeCapacity);
+  // f64 (not f32) so vote placement stays bit-identical to computing these inline.
+  let edgeDx = new Float64Array(edgeCapacity);
+  let edgeDy = new Float64Array(edgeCapacity);
+  let edgeCount = 0;
+
   for (let y = 1; y < h - 1; y++) {
     for (let x = 1; x < w - 1; x++) {
       const i = y * w + x;
@@ -112,20 +126,31 @@ export function detectCircles(
       const br = gray[i + w + 1];
       const sx = tr + 2 * r + br - (tl + 2 * l + bl);
       const sy = bl + 2 * b + br - (tl + 2 * t + tr);
-      gx[i] = sx;
-      gy[i] = sy;
-      mag[i] = Math.sqrt(sx * sx + sy * sy);
-    }
-  }
+      const magSq = sx * sx + sy * sy;
+      if (magSq <= EDGE_THRESHOLD_SQ) continue;
 
-  const EDGE_THRESHOLD = 60;
-  const edges: { x: number; y: number; dx: number; dy: number }[] = [];
-  for (let y = 1; y < h - 1; y++) {
-    for (let x = 1; x < w - 1; x++) {
-      const i = y * w + x;
-      if (mag[i] > EDGE_THRESHOLD) {
-        edges.push({ x, y, dx: gx[i] / mag[i], dy: gy[i] / mag[i] });
+      if (edgeCount === edgeCapacity) {
+        edgeCapacity *= 2;
+        const nx = new Int32Array(edgeCapacity);
+        nx.set(edgeX);
+        edgeX = nx;
+        const ny = new Int32Array(edgeCapacity);
+        ny.set(edgeY);
+        edgeY = ny;
+        const ndx = new Float64Array(edgeCapacity);
+        ndx.set(edgeDx);
+        edgeDx = ndx;
+        const ndy = new Float64Array(edgeCapacity);
+        ndy.set(edgeDy);
+        edgeDy = ndy;
       }
+
+      const mag = Math.sqrt(magSq);
+      edgeX[edgeCount] = x;
+      edgeY[edgeCount] = y;
+      edgeDx[edgeCount] = sx / mag;
+      edgeDy[edgeCount] = sy / mag;
+      edgeCount++;
     }
   }
 
@@ -133,26 +158,65 @@ export function detectCircles(
   const maxR = Math.max(minR, Math.round(options.maxRadius / ds));
 
   const candidates: RawCircle[] = [];
+  const acc = new Uint16Array(w * h);
+  const bucketsPerRow = Math.ceil(w / NMS_BUCKET);
+  // Cells that reached the vote threshold, recorded as they cross it. Scanning
+  // the whole accumulator per radius instead would cost w*h work per radius to
+  // find the handful of cells that actually qualify.
+  let hotCapacity = 1024;
+  let hot = new Int32Array(hotCapacity);
+
   for (let r = minR; r <= maxR; r += RADIUS_STEP) {
-    const acc = new Uint16Array(w * h);
-    for (const e of edges) {
-      const cx1 = Math.round(e.x + e.dx * r);
-      const cy1 = Math.round(e.y + e.dy * r);
-      const cx2 = Math.round(e.x - e.dx * r);
-      const cy2 = Math.round(e.y - e.dy * r);
-      if (cx1 >= 0 && cx1 < w && cy1 >= 0 && cy1 < h) acc[cy1 * w + cx1]++;
-      if (cx2 >= 0 && cx2 < w && cy2 >= 0 && cy2 < h) acc[cy2 * w + cx2]++;
-    }
+    acc.fill(0);
     const voteThreshold = Math.round(2 * Math.PI * r * VOTE_FRACTION);
-    const buckets = new Map<string, { x: number; y: number; v: number }>();
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const v = acc[y * w + x];
-        if (v < voteThreshold) continue;
-        const key = `${Math.floor(x / NMS_BUCKET)},${Math.floor(y / NMS_BUCKET)}`;
-        const existing = buckets.get(key);
-        if (!existing || v > existing.v) buckets.set(key, { x, y, v });
+    let hotCount = 0;
+
+    for (let e = 0; e < edgeCount; e++) {
+      const ex = edgeX[e];
+      const ey = edgeY[e];
+      const dx = edgeDx[e];
+      const dy = edgeDy[e];
+      const cx1 = Math.round(ex + dx * r);
+      const cy1 = Math.round(ey + dy * r);
+      const cx2 = Math.round(ex - dx * r);
+      const cy2 = Math.round(ey - dy * r);
+      if (cx1 >= 0 && cx1 < w && cy1 >= 0 && cy1 < h) {
+        const idx = cy1 * w + cx1;
+        if (++acc[idx] === voteThreshold) {
+          if (hotCount === hotCapacity) {
+            hotCapacity *= 2;
+            const next = new Int32Array(hotCapacity);
+            next.set(hot);
+            hot = next;
+          }
+          hot[hotCount++] = idx;
+        }
       }
+      if (cx2 >= 0 && cx2 < w && cy2 >= 0 && cy2 < h) {
+        const idx = cy2 * w + cx2;
+        if (++acc[idx] === voteThreshold) {
+          if (hotCount === hotCapacity) {
+            hotCapacity *= 2;
+            const next = new Int32Array(hotCapacity);
+            next.set(hot);
+            hot = next;
+          }
+          hot[hotCount++] = idx;
+        }
+      }
+    }
+
+    // Sorted so ties resolve to the same cell a row-major scan would pick.
+    const hotCells = hot.slice(0, hotCount).sort();
+    const buckets = new Map<number, { x: number; y: number; v: number }>();
+    for (let i = 0; i < hotCells.length; i++) {
+      const idx = hotCells[i];
+      const v = acc[idx];
+      const x = idx % w;
+      const y = (idx - x) / w;
+      const key = Math.floor(y / NMS_BUCKET) * bucketsPerRow + Math.floor(x / NMS_BUCKET);
+      const existing = buckets.get(key);
+      if (!existing || v > existing.v) buckets.set(key, { x, y, v });
     }
     for (const c of buckets.values()) candidates.push({ cx: c.x, cy: c.y, r, votes: c.v });
   }
