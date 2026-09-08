@@ -275,40 +275,85 @@ export interface BubbleCrop {
 }
 
 /**
- * Crops tightly around a detected circle and masks out everything outside
- * an inner disk (clipping away the circle's own stroke and any
- * neighboring symbols/lines), then upscales. Tesseract's page segmentation
- * reliably fails on the raw bubble (the stroke and connecting lines get
- * merged with the text into a non-text region) but reads the masked,
- * isolated text cleanly — validated against a real drawing (19/21 bubbles
- * read correctly vs 0/21 without masking).
+ * Mask half-axes, as multiples of the detected circle radius. A circular
+ * mask (rx = ry ≈ 0.82) isolates the text best in general, but tags whose
+ * loop number overflows the bubble ("SVC / 1378A") lose their last
+ * character to it; a wide, short ellipse keeps that overflow while still
+ * cutting the vertical connector lines above and below.
+ */
+export interface MaskShape {
+  rx: number;
+  ry: number;
+}
+
+/**
+ * Masks everything outside the given ellipse to white, on a region canvas
+ * that is centered on a detected circle and spans `pad` radii each way.
+ * Tesseract's page segmentation reliably fails on an unmasked bubble (the
+ * stroke and connecting lines get merged with the text into a non-text
+ * region and dropped) but reads the isolated text cleanly.
+ */
+export function maskRegion(
+  region: HTMLCanvasElement,
+  pad: number,
+  shape: MaskShape,
+): HTMLCanvasElement {
+  const masked = document.createElement("canvas");
+  masked.width = region.width;
+  masked.height = region.height;
+  const ctx = masked.getContext("2d");
+  if (!ctx) return region;
+
+  ctx.fillStyle = "white";
+  ctx.fillRect(0, 0, masked.width, masked.height);
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(
+    masked.width / 2,
+    masked.height / 2,
+    (masked.width / 2) * (shape.rx / pad),
+    (masked.height / 2) * (shape.ry / pad),
+    0,
+    0,
+    Math.PI * 2,
+  );
+  ctx.clip();
+  ctx.drawImage(region, 0, 0);
+  ctx.restore();
+  return masked;
+}
+
+/**
+ * Fallback for sources with no vector original (image uploads): crops the
+ * bubble out of the page raster and upscales it. PDFs should re-render the
+ * region instead (see RegionRenderer) — interpolating an existing raster
+ * can't recover detail that was never rendered.
  */
 export function cropMaskedCircle(
   source: HTMLCanvasElement,
   circle: DetectedCircle,
-  { pad = 1.15, innerRadiusFraction = 0.82, upscale = 5 } = {},
+  { pad = 1.15, shape = { rx: 0.82, ry: 0.82 }, upscale = 5 }: {
+    pad?: number;
+    shape?: MaskShape;
+    upscale?: number;
+  } = {},
 ): BubbleCrop {
   const padR = circle.r * pad;
   const offsetX = Math.round(circle.cx - padR);
   const offsetY = Math.round(circle.cy - padR);
   const size = Math.round(padR * 2);
 
-  const canvas = document.createElement("canvas");
-  canvas.width = size * upscale;
-  canvas.height = size * upscale;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return { canvas, offsetX, offsetY, scale: upscale };
+  const region = document.createElement("canvas");
+  region.width = size * upscale;
+  region.height = size * upscale;
+  const ctx = region.getContext("2d");
+  if (!ctx) return { canvas: region, offsetX, offsetY, scale: upscale };
 
   ctx.fillStyle = "white";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(canvas.width / 2, canvas.height / 2, (canvas.width / 2) * innerRadiusFraction, 0, Math.PI * 2);
-  ctx.clip();
+  ctx.fillRect(0, 0, region.width, region.height);
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(source, offsetX, offsetY, size, size, 0, 0, canvas.width, canvas.height);
-  ctx.restore();
+  ctx.drawImage(source, offsetX, offsetY, size, size, 0, 0, region.width, region.height);
 
-  return { canvas, offsetX, offsetY, scale: upscale };
+  return { canvas: maskRegion(region, pad, shape), offsetX, offsetY, scale: upscale };
 }

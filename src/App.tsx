@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { FileUpload } from "./components/FileUpload";
 import { PidViewer } from "./components/PidViewer";
 import { TagTable } from "./components/TagTable";
 import { SettingsPanel } from "./components/SettingsPanel";
-import { loadFileToPages } from "./lib/pdfRender";
+import { loadFile } from "./lib/pdfRender";
+import type { LoadedDocument } from "./lib/pdfRender";
 import { recognizePages } from "./lib/ocr";
 import type { OcrProgress } from "./lib/ocr";
 import { extractTagCandidates, candidatesToTags } from "./lib/grouping";
@@ -67,6 +68,7 @@ function App() {
   const [status, setStatus] = useState<Status>("idle");
   const [ocrProgress, setOcrProgress] = useState<OcrProgress | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const documentRef = useRef<LoadedDocument | null>(null);
 
   const busy = status === "rendering" || status === "ocr" || status === "grouping";
   const currentPage = pages[currentPageIndex] ?? null;
@@ -87,7 +89,11 @@ function App() {
 
     try {
       setStatus("rendering");
-      const loadedPages = await loadFileToPages(file, settings.ocrScale);
+      const loaded = await loadFile(file, settings.ocrScale);
+      // Release the previous document's pdf.js worker before replacing it.
+      documentRef.current?.destroy();
+      documentRef.current = loaded;
+      const loadedPages = loaded.pages;
       setPages(loadedPages);
 
       setStatus("ocr");
@@ -100,6 +106,8 @@ function App() {
             min: settings.bubbleMinRadius * settings.ocrScale,
             max: settings.bubbleMaxRadius * settings.ocrScale,
           },
+          renderRegion: loaded.renderRegion,
+          baseScale: loaded.baseScale,
         }),
         ocrTimeoutMs,
         "OCR timed out. This usually means the English language model could not be downloaded on first use (check your internet connection, or see the README for offline / self-hosted setup instructions) — but very large or dense drawings can also genuinely take this long; try lowering the OCR render scale in Settings and re-uploading if that's the case.",

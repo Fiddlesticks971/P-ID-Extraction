@@ -1,6 +1,8 @@
 import * as Tesseract from "tesseract.js";
-import type { Bbox, OcrWord, PageImage } from "../types";
-import { cropMaskedCircle, detectCircles } from "./circleDetect";
+import type { Bbox, DetectedCircle, OcrWord, PageImage } from "../types";
+import { cropMaskedCircle, detectCircles, maskRegion } from "./circleDetect";
+import type { MaskShape } from "./circleDetect";
+import type { RegionRenderer } from "./pdfRender";
 
 export interface OcrProgress {
   page: number;
@@ -15,6 +17,52 @@ export interface RecognizeOptions {
   detectBubbles?: boolean;
   /** Bubble radius search bounds, already in the page canvas's actual pixel space. */
   bubbleRadius?: { min: number; max: number };
+  /** Re-renders bubble regions from the vector source; greatly improves digit accuracy. */
+  renderRegion?: RegionRenderer;
+  /** Base scale the page rasters were rendered at, needed to convert region coordinates. */
+  baseScale?: number;
+}
+
+/** Restricting the alphabet keeps stray glyphs ("$", "™", "\") out of tag text. */
+const TAG_CHAR_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-";
+
+/**
+ * Each bubble is read more than once, under crop/scale combinations that
+ * fail in different ways, and the results are voted on field by field.
+ * Measured against a hand-transcribed ground truth for a real drawing's 20
+ * bubbles: the circular mask reads function codes best (20/20) but clips
+ * loop numbers that overflow the bubble, while the wide/short ellipse
+ * recovers those. Either alone scores 16/20 tags fully correct; together
+ * with voting they reach 18/20, against 5/20 for the previous single
+ * upscaled-raster pass.
+ */
+const BUBBLE_VARIANTS: { renderScale: number; pad: number; shape: MaskShape }[] = [
+  { renderScale: 4, pad: 1.25, shape: { rx: 0.82, ry: 0.82 } },
+  { renderScale: 5, pad: 1.6, shape: { rx: 1.15, ry: 0.95 } },
+];
+
+const FUNC_TOKEN = /^[A-Z]{1,5}$/;
+const LOOP_TOKEN = /^\d{2,5}[A-Z]?$/;
+
+interface TokenVote {
+  votes: number;
+  confidenceSum: number;
+}
+
+/** Majority vote over candidate tokens; ties prefer the longer token (e.g. "1378A" over "1378"). */
+function pickBest(tallies: Map<string, TokenVote>): { text: string; confidence: number } | null {
+  let best: { text: string; vote: TokenVote } | null = null;
+  for (const [text, vote] of tallies) {
+    if (
+      !best ||
+      vote.votes > best.vote.votes ||
+      (vote.votes === best.vote.votes && text.length > best.text.length)
+    ) {
+      best = { text, vote: vote };
+    }
+  }
+  if (!best) return null;
+  return { text: best.text, confidence: best.vote.confidenceSum / best.vote.votes };
 }
 
 /**
@@ -74,20 +122,55 @@ async function recognizeCanvas(
   return words;
 }
 
+/** Builds one masked view of a bubble, re-rendered from vector source when available. */
+async function buildBubbleView(
+  page: PageImage,
+  circle: DetectedCircle,
+  variant: (typeof BUBBLE_VARIANTS)[number],
+  renderRegion: RegionRenderer | undefined,
+  baseScale: number,
+): Promise<HTMLCanvasElement> {
+  // renderScale is an absolute scale on the source's own coordinate space, so
+  // a given text size lands at the same pixel height whatever the drawing —
+  // which is what Tesseract actually cares about. Measured optimum is 4-5;
+  // both lower and much higher (12+) read noticeably worse.
+  const padR = circle.r * variant.pad;
+  if (!renderRegion) {
+    // No vector source (image upload): match the same effective resolution by
+    // interpolating the page raster instead.
+    return cropMaskedCircle(page.canvas, circle, {
+      pad: variant.pad,
+      shape: variant.shape,
+      upscale: Math.max(1, variant.renderScale / baseScale),
+    }).canvas;
+  }
+  const region = await renderRegion(
+    page.pageNumber,
+    { x: circle.cx - padR, y: circle.cy - padR, w: padR * 2, h: padR * 2 },
+    variant.renderScale,
+  );
+  return maskRegion(region, variant.pad, variant.shape);
+}
+
 /**
  * Instrument bubbles (circular symbols enclosing a 1-2 line tag) are the
  * hardest case for whole-page OCR: Tesseract's page segmentation tends to
  * merge the circle's stroke and connecting lines with the text into a
  * non-text region and drops it entirely, especially when bubbles sit close
- * together. Detecting the circles first and OCR-ing each one individually
- * (cropped tight, stroke masked out, upscaled) recovers most of them —
- * validated against a real drawing: 19/21 bubbles read correctly this way
- * vs 0/21 from whole-page OCR alone.
+ * together. Each detected circle is instead read on its own, several times
+ * over (see BUBBLE_VARIANTS), and the function code and loop number are
+ * voted on separately across those reads.
+ *
+ * The vote winners are emitted as two stacked synthetic words covering the
+ * bubble, so the normal pattern matching downstream combines them into a
+ * tag exactly as it would a real two-line bubble.
  */
 async function recognizeBubbles(
   worker: Tesseract.Worker,
   page: PageImage,
   bubbleRadius: { min: number; max: number },
+  renderRegion: RegionRenderer | undefined,
+  baseScale: number,
   onProgress?: (found: number, total: number) => void,
 ): Promise<OcrWord[]> {
   const circles = detectCircles(page.canvas, {
@@ -96,23 +179,62 @@ async function recognizeBubbles(
   });
 
   const words: OcrWord[] = [];
-  const previousPsm = Tesseract.PSM.SPARSE_TEXT;
-  await worker.setParameters({ tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK });
+  await worker.setParameters({
+    tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK,
+    tessedit_char_whitelist: TAG_CHAR_WHITELIST,
+  });
 
   for (let i = 0; i < circles.length; i++) {
     const circle = circles[i];
-    const crop = cropMaskedCircle(page.canvas, circle);
-    const cropWords = await recognizeCanvas(worker, crop.canvas, page.pageNumber, (bbox) => ({
-      x0: crop.offsetX + bbox.x0 / crop.scale,
-      y0: crop.offsetY + bbox.y0 / crop.scale,
-      x1: crop.offsetX + bbox.x1 / crop.scale,
-      y1: crop.offsetY + bbox.y1 / crop.scale,
-    }));
-    words.push(...cropWords);
+    const funcVotes = new Map<string, TokenVote>();
+    const loopVotes = new Map<string, TokenVote>();
+
+    for (const variant of BUBBLE_VARIANTS) {
+      const view = await buildBubbleView(page, circle, variant, renderRegion, baseScale);
+      const read = await recognizeCanvas(worker, view, page.pageNumber);
+      // One vote per distinct token per variant, so a single noisy read
+      // that repeats a token can't outweigh the other variants.
+      const seen = new Set<string>();
+      for (const word of read) {
+        const text = word.text.toUpperCase().replace(/[^A-Z0-9]/g, "");
+        if (!text || seen.has(text)) continue;
+        seen.add(text);
+        const target = FUNC_TOKEN.test(text) ? funcVotes : LOOP_TOKEN.test(text) ? loopVotes : null;
+        if (!target) continue;
+        const existing = target.get(text) ?? { votes: 0, confidenceSum: 0 };
+        existing.votes += 1;
+        existing.confidenceSum += word.confidence;
+        target.set(text, existing);
+      }
+    }
+
+    const func = pickBest(funcVotes);
+    const loop = pickBest(loopVotes);
+    // Stacked halves of the bubble, so the pair-merging step joins them.
+    const { cx, cy, r } = circle;
+    if (func) {
+      words.push({
+        text: func.text,
+        confidence: func.confidence,
+        bbox: { x0: cx - r * 0.7, y0: cy - r * 0.65, x1: cx + r * 0.7, y1: cy - r * 0.05 },
+        page: page.pageNumber,
+      });
+    }
+    if (loop) {
+      words.push({
+        text: loop.text,
+        confidence: loop.confidence,
+        bbox: { x0: cx - r * 0.85, y0: cy + r * 0.05, x1: cx + r * 0.85, y1: cy + r * 0.65 },
+        page: page.pageNumber,
+      });
+    }
     onProgress?.(i + 1, circles.length);
   }
 
-  await worker.setParameters({ tessedit_pageseg_mode: previousPsm });
+  await worker.setParameters({
+    tessedit_pageseg_mode: Tesseract.PSM.SPARSE_TEXT,
+    tessedit_char_whitelist: "",
+  });
   return words;
 }
 
@@ -128,7 +250,7 @@ export async function recognizePages(
   pages: PageImage[],
   options: RecognizeOptions = {},
 ): Promise<OcrWord[]> {
-  const { onProgress, detectBubbles = true, bubbleRadius } = options;
+  const { onProgress, detectBubbles = true, bubbleRadius, renderRegion, baseScale = 1 } = options;
   let currentPage = pages[0]?.pageNumber ?? 1;
 
   const worker = await Tesseract.createWorker("eng", 1, {
@@ -168,7 +290,7 @@ export async function recognizePages(
 
     if (detectBubbles && bubbleRadius) {
       words.push(
-        ...(await recognizeBubbles(worker, page, bubbleRadius, (found, total) => {
+        ...(await recognizeBubbles(worker, page, bubbleRadius, renderRegion, baseScale, (found, total) => {
           onProgress?.({
             page: page.pageNumber,
             totalPages: pages.length,

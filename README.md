@@ -22,10 +22,15 @@ to a server.
 - **Circular instrument-bubble detection** — whole-page OCR reliably fails
   on text packed tightly inside circular instrument symbols (the stroke and
   connecting lines get merged with the text into a non-text region and
-  dropped). A Hough-transform circle detector finds these bubbles, crops
-  each one tight, masks out its stroke, and OCRs it in isolation
-  (`src/lib/circleDetect.ts`) — recovers most bubble tags that would
-  otherwise be missed entirely. Adjustable/toggleable in Settings.
+  dropped). A Hough-transform circle detector finds these bubbles
+  (`src/lib/circleDetect.ts`), and each one is then read on its own,
+  several times over, and voted on — see below. Adjustable/toggleable in
+  Settings.
+- **Vector re-rendering for bubble text** — for PDFs, each bubble is
+  re-rendered from the original vector source at the scale OCR reads best,
+  rather than upscaling pixels from the page raster. Upscaling can only
+  interpolate detail that was never there; re-rendering is what lets OCR
+  reliably tell a `3` from a `5` in a loop number.
 - **Rotated-text pass** — each page is also OCR'd rotated 90°, to catch
   vertical instrument tags next to horizontal lines that a horizontal-only
   pass misses completely.
@@ -61,11 +66,19 @@ highlighted boxes on the drawing and as rows in the table on the right.
 3. Circular instrument bubbles are detected on the page (Hough gradient
    circle transform over a box-downsampled grayscale image, with a
    circumference-coverage check to reject false positives from round
-   letterforms — `src/lib/circleDetect.ts`). Each detected bubble is
-   cropped tight, its stroke masked out (clipped to an inner disk so
-   neighboring bubbles/lines are excluded too), upscaled, and OCR'd on its
-   own — this is what recovers tags that whole-page OCR merges into
-   unreadable noise.
+   letterforms — `src/lib/circleDetect.ts`). Each detected bubble is then
+   read **twice**, under two deliberately different views, and the results
+   are voted on field by field (`BUBBLE_VARIANTS` in `src/lib/ocr.ts`):
+   - a **circular** mask at 0.82 r, re-rendered at scale 4 — isolates the
+     function code best;
+   - a **wide, short ellipse** (1.15 r × 0.95 r) at scale 5 — recovers loop
+     numbers that overflow the bubble (`SVC / 1378A`) which the circular
+     mask clips, while still cutting the vertical connector lines.
+
+   Both are OCR'd with a tag-only character whitelist. The winning function
+   code and loop number are emitted as two stacked synthetic words covering
+   the bubble, so the normal pattern matching below combines them into a tag
+   exactly as it would a real two-line bubble.
 4. Every word from all three passes is tested against the enabled regex
    patterns (`src/lib/tagPatterns.ts`). Vertically stacked word pairs are
    also tried combined, to catch two-line bubble tags
@@ -133,28 +146,48 @@ Validated against a real, dense, professionally-drafted P&ID (a single
 6480×4320px page at the default render scale — see the table below for
 before/after numbers). Findings from that pass:
 
-- **Circular instrument bubbles were the hardest case, now handled by
-  dedicated detection.** Whole-page OCR alone found 0 of 21 visible
-  instrument bubbles on the test drawing (Tesseract's segmentation merges
-  the circle stroke and connecting lines with the text and drops it
-  entirely — confirmed this isn't a resolution problem, tested up to 6x
-  local upscaling). With circle detection + isolated cropped OCR
-  (`src/lib/circleDetect.ts`), 19-20 of those 21 bubbles were read
-  correctly. Bubble radius varies by drawing convention/scale — if bubbles
-  on your drawing aren't being found, widen the min/max bubble radius in
-  Settings (they default to a range tuned to the validated test drawing).
-- **OCR digit errors** (particularly `3` misread as `5`, an artifact of
-  this drawing's specific CAD font) are the main remaining error class on
-  otherwise-correctly-located tags — always double check digits against
-  the highlighted drawing before exporting; incorrect ones are a quick
-  inline edit in the table.
+Bubble-tag accuracy was tuned against a hand-transcribed ground truth for
+the 20 instrument bubbles on the test drawing. Measured, end to end through
+the real modules:
+
+| Approach | Tags fully correct | Function code | Loop number |
+| --- | --- | --- | --- |
+| Whole-page OCR only | 0/20 | — | — |
+| Single upscaled raster crop | 5/20 | 15/20 | 6/20 |
+| Vector re-render, single view | 16/20 | 20/20 | 16/20 |
+| **Two views + field voting (current)** | **18/20** | **20/20** | **18/20** |
+
+Three things that sound like they should help but measurably did **not**,
+so they aren't in the code:
+
+- **Rendering the page raster at a higher scale.** Going from 2.5x to 4x
+  made whole-page OCR clearly *worse* (12/13 → 5/13 known line numbers and
+  air-supply tags read exactly). Tesseract has a glyph-size sweet spot;
+  bigger is not better. The same effect shows up in the bubble sweep, where
+  render scale 12 scored far below 4-5.
+- **Detecting circles at full resolution.** Hough votes disperse across
+  neighbouring accumulator cells instead of concentrating, and detection
+  drops to zero. Detection deliberately runs on a downsampled image.
+- **A character whitelist on the whole-page passes.** It helps on bubble
+  crops (which are pure tag text) but would corrupt pipe sizes like `4"`.
+
+Remaining known limitations:
+
+- 2 of the 20 bubbles still lose a trailing suffix letter (`ZSC-1378A` read
+  as `ZSC-13784`, `ZSO-1378A` as `ZSO-1378`) where the loop number
+  overflows the bubble and collides with the circle stroke.
 - One bubble on the test drawing used a solid-fill (knockout/reversed) text
   style rather than the standard hollow outline — that style isn't read;
   add such tags manually with "+ Add Tag".
+- Bubble radius varies by drawing convention/scale — if bubbles on your
+  drawing aren't being found, widen the min/max bubble radius in Settings.
+- Image uploads (PNG/JPG) have no vector source, so their bubble crops fall
+  back to upscaling the raster and will read less accurately than a PDF of
+  the same drawing.
+- These numbers come from one real drawing with one CAD font. Treat the
+  ranking of approaches as more transferable than the exact counts.
 - Tags in open space, in box/rectangle symbols, and pipe line numbers are
-  read reliably without any of the above caveats.
-- OCR accuracy depends heavily on drawing scan quality/resolution; increase
-  the OCR render scale in Settings for small or low-DPI text.
+  read reliably without the bubble-specific caveats above.
 - Stacked-tag merging currently only combines two lines of text; tags spread
   across three or more lines (e.g. area-loop-suffix each on their own line)
   are not automatically merged and should be added manually.
