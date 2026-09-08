@@ -4,8 +4,29 @@ export interface CircleDetectOptions {
   /** Search radius bounds, in the canvas's own pixel space. */
   minRadius: number;
   maxRadius: number;
-  /** Canvas is downsampled by this factor before detection, for speed. */
+  /**
+   * Canvas is downsampled by this factor before detection, for speed.
+   * Omit to auto-derive from minRadius (see autoDownsample below) so small
+   * bubble searches automatically get more resolution instead of silently
+   * failing to detect anything.
+   */
   downsample?: number;
+}
+
+/** Default/max downsample factor when none is explicitly requested (matches the validated default). */
+const DEFAULT_MAX_DOWNSAMPLE = 3;
+/** Never downsample so much that the smallest searched radius drops below this many pixels. */
+const MIN_DOWNSAMPLED_RADIUS = 5;
+
+/**
+ * Picks a downsample factor automatically from the requested minimum
+ * radius: small bubbles need less downsampling (more retained resolution)
+ * to stay detectable at all, while larger bubbles keep the default (fast)
+ * factor rather than downsampling even less than necessary.
+ */
+function autoDownsample(minRadius: number): number {
+  const bounded = Math.floor(minRadius / MIN_DOWNSAMPLED_RADIUS);
+  return Math.max(1, Math.min(DEFAULT_MAX_DOWNSAMPLE, bounded));
 }
 
 const RADIUS_STEP = 1;
@@ -43,7 +64,7 @@ export function detectCircles(
   source: HTMLCanvasElement,
   options: CircleDetectOptions,
 ): DetectedCircle[] {
-  const ds = options.downsample ?? 3;
+  const ds = options.downsample ?? autoDownsample(options.minRadius);
   const w = Math.floor(source.width / ds);
   const h = Math.floor(source.height / ds);
   if (w < 4 || h < 4) return [];

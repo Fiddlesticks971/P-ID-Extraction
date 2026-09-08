@@ -11,6 +11,10 @@ interface TagTableProps {
   onDeleteUnconfirmed: () => void;
 }
 
+// Tag, Type, Description, Page, Conf., Verified, actions
+const DEFAULT_COLUMN_WIDTHS = [110, 90, 160, 50, 55, 65, 70];
+const MIN_COLUMN_WIDTH = 32;
+
 export function TagTable({
   tags,
   selectedTagId,
@@ -21,6 +25,30 @@ export function TagTable({
   onDeleteUnconfirmed,
 }: TagTableProps) {
   const [filter, setFilter] = useState("");
+  const [columnWidths, setColumnWidths] = useState<number[]>(DEFAULT_COLUMN_WIDTHS);
+
+  function startColumnResize(index: number, e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startWidth = columnWidths[index];
+
+    function onMouseMove(moveEvent: MouseEvent) {
+      const nextWidth = Math.max(MIN_COLUMN_WIDTH, startWidth + (moveEvent.clientX - startX));
+      setColumnWidths((prev) => prev.map((w, i) => (i === index ? nextWidth : w)));
+    }
+    function onMouseUp() {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      document.body.style.removeProperty("cursor");
+      document.body.style.removeProperty("user-select");
+    }
+
+    document.body.style.setProperty("cursor", "col-resize");
+    document.body.style.setProperty("user-select", "none");
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }
 
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase();
@@ -56,15 +84,24 @@ export function TagTable({
       </div>
       <div className="tag-table-scroll">
         <table className="tag-table">
+          <colgroup>
+            {columnWidths.map((w, i) => (
+              // eslint-disable-next-line react/no-array-index-key -- column count/order is fixed
+              <col key={i} style={{ width: w }} />
+            ))}
+          </colgroup>
           <thead>
             <tr>
-              <th>Tag</th>
-              <th>Type</th>
-              <th>Description</th>
-              <th>Page</th>
-              <th>Conf.</th>
-              <th>Verified</th>
-              <th></th>
+              {["Tag", "Type", "Description", "Page", "Conf.", "Verified", ""].map((label, i) => (
+                <th key={label || "actions"}>
+                  {label}
+                  <span
+                    className="col-resize-handle"
+                    onMouseDown={(e) => startColumnResize(i, e)}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>

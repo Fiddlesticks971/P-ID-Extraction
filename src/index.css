@@ -317,6 +317,7 @@ input:not([type]) {
 .tag-table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
   font-size: 12px;
 }
 .tag-table th {
@@ -327,11 +328,30 @@ input:not([type]) {
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
   color: var(--text-h);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .tag-table td {
   padding: 4px 8px;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 1;
+}
+.col-resize-handle:hover,
+.col-resize-handle:active {
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 .tag-table tr:hover {
   background: color-mix(in srgb, var(--accent) 5%, transparent);

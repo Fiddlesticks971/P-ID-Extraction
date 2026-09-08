@@ -101,6 +101,10 @@ export function SettingsPanel({
               value={settings.bubbleMinRadius}
               onChange={(e) => onChange({ ...settings, bubbleMinRadius: Number(e.target.value) })}
             />
+            <span className="muted">
+              Detection automatically retains more image resolution for smaller radii (rather than a fixed
+              downsample) so tiny bubbles stay detectable &mdash; at the cost of a slower detection pass.
+            </span>
           </label>
           <label className="settings-field">
             Max bubble radius ({settings.bubbleMaxRadius}px @ 1x scale)
