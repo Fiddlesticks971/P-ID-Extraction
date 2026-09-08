@@ -74,6 +74,57 @@ export function SettingsPanel({
         </span>
       </label>
 
+      <label className="settings-field settings-checkbox">
+        <input
+          type="checkbox"
+          checked={settings.detectBubbles}
+          onChange={(e) => onChange({ ...settings, detectBubbles: e.target.checked })}
+        />
+        Detect circular instrument bubbles
+        <span className="muted">
+          Whole-page OCR reliably misses text packed tightly inside circular instrument symbols. When
+          enabled, each detected circle is cropped, isolated from its stroke/neighbors, and OCR'd
+          separately &mdash; this is slower (roughly one extra OCR pass per bubble) but recovers most of
+          those tags.
+        </span>
+      </label>
+
+      {settings.detectBubbles && (
+        <>
+          <label className="settings-field">
+            Min bubble radius ({settings.bubbleMinRadius}px @ 1x scale)
+            <input
+              type="range"
+              min={4}
+              max={60}
+              step={1}
+              value={settings.bubbleMinRadius}
+              onChange={(e) => onChange({ ...settings, bubbleMinRadius: Number(e.target.value) })}
+            />
+          </label>
+          <label className="settings-field">
+            Max bubble radius ({settings.bubbleMaxRadius}px @ 1x scale)
+            <input
+              type="range"
+              min={4}
+              max={80}
+              step={1}
+              value={settings.bubbleMaxRadius}
+              onChange={(e) => onChange({ ...settings, bubbleMaxRadius: Number(e.target.value) })}
+            />
+            <span className="muted">
+              Radius search range for detecting instrument bubbles, scaled by the OCR render scale above.
+              Widen this if bubbles on your drawing aren't being found.
+            </span>
+          </label>
+        </>
+      )}
+
+      <p className="muted settings-note">
+        OCR-time settings (render scale, bubble detection) only take effect on the next upload &mdash;
+        &quot;Re-run Extraction&quot; below only re-applies tag patterns to the text already scanned.
+      </p>
+
       <div className="settings-patterns">
         <div className="settings-patterns-header">
           <h3>Tag Patterns</h3>

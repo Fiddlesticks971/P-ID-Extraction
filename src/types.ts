@@ -49,4 +49,14 @@ export interface AppSettings {
   ocrScale: number;
   groupStackedText: number;
   patterns: TagPattern[];
+  detectBubbles: boolean;
+  /** Bubble radius search range, in pixels at ocrScale = 1 (scaled by ocrScale at detection time). */
+  bubbleMinRadius: number;
+  bubbleMaxRadius: number;
+}
+
+export interface DetectedCircle {
+  cx: number;
+  cy: number;
+  r: number;
 }

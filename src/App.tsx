@@ -14,12 +14,13 @@ import "./index.css";
 
 type Status = "idle" | "rendering" | "ocr" | "grouping" | "ready" | "error";
 
-// Each page is OCR'd twice (upright + rotated 90°, see ocr.ts) at full
-// drawing resolution, which is legitimately slow for large, dense P&IDs —
-// this only needs to be generous enough to rule out an infinite hang (e.g.
-// a failed language-model download), not to tightly bound normal runtime.
+// Each page is OCR'd twice (upright + rotated 90°) plus once more per
+// detected instrument bubble (see ocr.ts) at full drawing resolution,
+// which is legitimately slow for large, dense P&IDs — this only needs to
+// be generous enough to rule out an infinite hang (e.g. a failed
+// language-model download), not to tightly bound normal runtime.
 const OCR_BASE_TIMEOUT_MS = 5 * 60_000;
-const OCR_PER_PAGE_TIMEOUT_MS = 5 * 60_000;
+const OCR_PER_PAGE_TIMEOUT_MS = 8 * 60_000;
 
 /**
  * tesseract.js can swallow a failed language-model download inside its
@@ -42,6 +43,12 @@ function defaultSettings(): AppSettings {
     ocrScale: 2.5,
     groupStackedText: 0.8,
     patterns: DEFAULT_PATTERNS.map((p) => ({ ...p })),
+    detectBubbles: true,
+    // Radius bounds at ocrScale = 1; scaled up by the current OCR render
+    // scale at detection time. Validated against a real drawing at the
+    // default 2.5x scale (bubbles measured ~33-54px radius there).
+    bubbleMinRadius: 13,
+    bubbleMaxRadius: 22,
   };
 }
 
@@ -86,7 +93,14 @@ function App() {
       setStatus("ocr");
       const ocrTimeoutMs = OCR_BASE_TIMEOUT_MS + loadedPages.length * OCR_PER_PAGE_TIMEOUT_MS;
       const ocrWords = await withTimeout(
-        recognizePages(loadedPages, setOcrProgress),
+        recognizePages(loadedPages, {
+          onProgress: setOcrProgress,
+          detectBubbles: settings.detectBubbles,
+          bubbleRadius: {
+            min: settings.bubbleMinRadius * settings.ocrScale,
+            max: settings.bubbleMaxRadius * settings.ocrScale,
+          },
+        }),
         ocrTimeoutMs,
         "OCR timed out. This usually means the English language model could not be downloaded on first use (check your internet connection, or see the README for offline / self-hosted setup instructions) — but very large or dense drawings can also genuinely take this long; try lowering the OCR render scale in Settings and re-uploading if that's the case.",
       );

@@ -392,6 +392,24 @@ input:not([type]) {
   font-size: 13px;
   color: var(--text-h);
 }
+.settings-checkbox {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.settings-checkbox input {
+  flex-shrink: 0;
+}
+.settings-checkbox .muted {
+  flex-basis: 100%;
+}
+.settings-note {
+  margin: 0;
+  padding: 8px;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  border-radius: 4px;
+}
 .settings-patterns-header {
   display: flex;
   justify-content: space-between;
