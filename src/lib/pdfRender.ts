@@ -1,7 +1,9 @@
 import * as pdfjsLib from "pdfjs-dist";
-import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import pdfWorkerUrl from "./pdfWorkerEntry.ts?worker&url";
 import type { PageImage } from "../types";
+import { installMapUpsertPolyfill } from "./mapUpsertPolyfill";
 
+installMapUpsertPolyfill();
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 async function renderPdfToPages(

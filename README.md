@@ -94,8 +94,10 @@ need a fully offline/air-gapped setup:
 3. In `src/lib/ocr.ts`, add `langPath: "/tesseract/lang"` to the
    `Tesseract.createWorker` options.
 
-If the language model can't be downloaded, the app times out after 90
-seconds with a clear error message rather than hanging indefinitely.
+If the language model can't be downloaded, the app times out (5 minutes,
+plus 5 more per page — real OCR on a dense, high-resolution drawing is
+legitimately slow) with a clear error message rather than hanging
+indefinitely.
 
 ## Tech stack
 
@@ -107,6 +109,30 @@ seconds with a clear error message rather than hanging indefinitely.
 
 ## Known limitations
 
+Validated against a real, dense, professionally-drafted P&ID (a single
+6480×4320px page at the default render scale). Findings from that pass:
+
+- **Rotated/vertical tag labels are handled.** Each page is OCR'd both
+  upright and rotated 90° (`src/lib/ocr.ts`), which is what recovers the
+  vertical instrument tags (e.g. air-supply valve tags run bottom-to-top
+  next to horizontal lines) common on real P&IDs. Roughly doubles OCR time
+  per page.
+- **Tags packed tightly inside circular instrument bubbles are the weakest
+  case.** When several instrument bubbles sit close together (a common
+  layout — e.g. a row of `FCV`/`ZT`/`ZSO`/`ZSC`/`SVC`/`FY` bubbles sharing a
+  control panel), Tesseract's page-segmentation tends to merge the circle
+  strokes and connecting lines into non-text regions and drops the text
+  inside entirely — confirmed this misses such tags regardless of OCR
+  render scale (tested up to 6x local upscaling); it isn't a
+  resolution/settings problem. Tags in open space, in box/rectangle
+  symbols, and pipe line numbers are read reliably. This is why the
+  highlighted-overlay verification workflow and the "+ Add Tag" manual tool
+  exist — treat OCR output as a first pass to verify against the drawing,
+  not a guaranteed-complete extraction, especially for closely-packed
+  bubble clusters. Properly solving this in general would need symbol
+  (bubble) detection to crop and OCR each instrument tag individually,
+  which is a substantially bigger feature than this app currently
+  implements.
 - OCR accuracy depends heavily on drawing scan quality/resolution; increase
   the OCR render scale in Settings for small or low-DPI text.
 - Stacked-tag merging currently only combines two lines of text; tags spread

@@ -14,7 +14,12 @@ import "./index.css";
 
 type Status = "idle" | "rendering" | "ocr" | "grouping" | "ready" | "error";
 
-const OCR_TIMEOUT_MS = 90_000;
+// Each page is OCR'd twice (upright + rotated 90°, see ocr.ts) at full
+// drawing resolution, which is legitimately slow for large, dense P&IDs —
+// this only needs to be generous enough to rule out an infinite hang (e.g.
+// a failed language-model download), not to tightly bound normal runtime.
+const OCR_BASE_TIMEOUT_MS = 5 * 60_000;
+const OCR_PER_PAGE_TIMEOUT_MS = 5 * 60_000;
 
 /**
  * tesseract.js can swallow a failed language-model download inside its
@@ -79,10 +84,11 @@ function App() {
       setPages(loadedPages);
 
       setStatus("ocr");
+      const ocrTimeoutMs = OCR_BASE_TIMEOUT_MS + loadedPages.length * OCR_PER_PAGE_TIMEOUT_MS;
       const ocrWords = await withTimeout(
         recognizePages(loadedPages, setOcrProgress),
-        OCR_TIMEOUT_MS,
-        "OCR timed out. This usually means the English language model could not be downloaded on first use — check your internet connection, or see the README for offline / self-hosted setup instructions.",
+        ocrTimeoutMs,
+        "OCR timed out. This usually means the English language model could not be downloaded on first use (check your internet connection, or see the README for offline / self-hosted setup instructions) — but very large or dense drawings can also genuinely take this long; try lowering the OCR render scale in Settings and re-uploading if that's the case.",
       );
       setWords(ocrWords);
 
