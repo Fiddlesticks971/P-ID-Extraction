@@ -280,23 +280,64 @@ Bubble-tag accuracy was tuned against a hand-transcribed ground truth for
 the instrument bubbles on the test drawing. The drawing has **24** of them —
 established by running detection deliberately loose and classifying every
 candidate by eye, which is also how four bubbles that earlier passes silently
-missed came to light. Measured end to end through the real modules:
+missed came to light.
 
-| Approach | Bubbles detected | Tags fully correct |
-| --- | --- | --- |
-| Whole-page OCR only | — | 0/24 |
-| Single upscaled raster crop | 20/24 | 5/24 |
-| Vector re-render + two views + field voting | 20/24 | 18/24 |
-| **+ broken-arc detection & interior-ink filter (current)** | **24/24** | **20/24** |
+**Circle detection is exact and stable: 24/24 real bubbles, zero false
+positives**, verified by running the detector directly over the page raster.
 
-Detection is now exact on this drawing: all 24 real bubbles, no false
-positives. Four of them had their circle drawn as a **broken arc** where it
-meets a neighbouring symbol, so they never reached the Hough vote threshold.
-Lowering that threshold alone would have admitted the Williams logo and
-title-block lettering as "circles"; those are rejected instead by an
-**interior-ink** check — a real bubble holds one or two short lines of text
-on white (measured 0.12-0.20 of its interior inked) while the false
-positives are dense blobs (0.27-0.79).
+Text accuracy is a different story, and the numbers below come from a **real
+browser run exported by a user**, not from a proxy. That distinction matters:
+an earlier revision of this file claimed 20/24, measured with the native
+`tesseract` CLI standing in for the browser engine because this
+environment cannot download tesseract.js's language model. The real
+in-browser engine (`4.0.0_best_int`) scored **12/24** on the same drawing.
+The proxy was optimistic and the claim was wrong; these are the corrected
+figures.
+
+| Stage | Bubble tags exactly correct |
+| --- | --- |
+| Whole-page OCR only | 0/24 |
+| Single upscaled raster crop | 5/24 |
+| Vector re-render + two views + field voting | 12/24 |
+| **+ cross-sheet reconciliation (current)** | **19/24** |
+
+The last row is the fix for what the raw OCR gets wrong, and it does not
+depend on OCR getting better. A P&ID repeats itself: a loop number is
+shared by every device in the loop, and those devices are drawn next to
+each other. `src/lib/reconcile.ts` uses that. Where one bubble reads
+`13217` and five neighbouring bubbles on the same assembly read `1321`
+and `1321A`, the odd reading is a misread `A`, and the sheet says so.
+
+The rules are structural rather than a plain edit distance, because a plain
+edit distance actively destroys good data here: **`1321` and `1321A` are two
+different loops that both exist on this drawing**, and "snap to the most
+common value" turns a correctly-read `1321A` into `1321`. So a suffix letter
+is never deleted; what is allowed is recovering a suffix read as a trailing
+digit (`13217` → `1321A`, and only when some tag on the sheet actually reads
+`1321A`), a confusable digit swap in the stem (`1327` → `1321`), and a
+dropped stem digit (`378A` → `1378A`). Function codes are matched against a
+dictionary of codes P&IDs actually use, which is what turns `AQV` back into
+`AOV`.
+
+Every correction is a **suggestion, not an assertion**: the tag stays
+`uncertain`, and its Notes record what it was read as and why it was
+changed. Nothing here invents a reading no OCR pass produced — the one
+remaining error on the test drawing (`ZSC-1378A` read as `A-1378`) is left
+exactly as read, because no rule can recover it honestly.
+
+Two other findings from that same real run, both now fixed:
+
+- **Four detected bubbles produced no tag at all and were silently
+  dropped.** This is the worst failure mode an extraction tool has, because
+  the output looks complete. A bubble that cannot be read is now emitted as
+  an `illegible` row at its location on the sheet, so all 24 are always
+  accounted for.
+- **23 of the 43 exported rows were not instruments** — `E1550` from the
+  spec code in `8"-G-0331-8E1550`, `BD-0038` from the valve number
+  `03-BD-0038`, and so on. The tag patterns were matching *inside* longer
+  tokens. They are now anchored so a candidate has to stand on its own, and
+  every tag records whether it came from a bubble or from page text, with
+  the table showing bubbles by default.
 
 Three things that sound like they should help but measurably did **not**,
 so they aren't in the code:
@@ -314,14 +355,14 @@ so they aren't in the code:
 
 Remaining known limitations:
 
-- 4 of the 24 bubbles lose a trailing suffix letter (`ZSC-1378A` read as
-  `ZSC-13784`, `ZSO-1378A` as `ZSO-1378`, and likewise `BDV-1378A` and
-  `SVO-1321A`) where the loop number overflows the bubble and collides with
-  the circle stroke. This is the one error class left, and it is stubborn:
-  wider elliptical masks, a 48-configuration crop/PSM sweep, and a
-  vote rule that prefers a trailing letter when one is offered all failed to
-  recover it — for two of these tags no configuration tried ever read the
-  suffix at all.
+- Of the 24 bubbles on the test drawing, 19 read exactly, 4 come back as
+  `illegible` (detected, unreadable — they need typing in by hand), and 1
+  (`ZSC-1378A`) is misread as `A-1378` and is not recoverable by
+  reconciliation. Expect to review every tag; this is a first pass, not an
+  answer.
+- Reconciliation needs the sheet to repeat itself. On a drawing with only
+  one device per loop there is nothing to cross-check against, and it will
+  correct nothing.
 - One bubble on the test drawing used a solid-fill (knockout/reversed) text
   style rather than the standard hollow outline — that style isn't read;
   add such tags manually with "+ Add Tag".

@@ -9,12 +9,21 @@ import type { TagPattern } from "../types";
  * Each pattern should use named capture groups `func`, `loop`, and `suffix`
  * where possible so extracted tags can be split into columns. Patterns
  * without named groups still work; the whole match is used as the tag text.
+ *
+ * Note the `(?<![A-Z0-9-])` / `(?![A-Z0-9-])` guards on the instrument and
+ * equipment patterns. Without them a tag pattern happily matches *inside* a
+ * longer token, and on a real P&ID that is the dominant source of false
+ * positives: `8"-G-0331-8E1550` yields "E1550", `03-BD-0038` yields
+ * "BD-0038", `4"-BD-0334-8E1550` yields both. A `\b` is not enough — there
+ * is no word boundary between the `8` and the `E` of a spec code. Requiring
+ * that the match not be flanked by another tag character means a candidate
+ * has to stand on its own.
  */
 export const DEFAULT_PATTERNS: TagPattern[] = [
   {
     id: "isa-instrument",
     name: "ISA Instrument Tag",
-    pattern: String.raw`(?<func>[A-Z]{1,5})-?(?<loop>\d{2,5})(?<suffix>[A-Z]{1,2})?\b`,
+    pattern: String.raw`(?<![A-Z0-9-])(?<func>[A-Z]{1,5})-?(?<loop>\d{2,5})(?<suffix>[A-Z]{1,2})?(?![A-Z0-9-])`,
     enabled: true,
     description:
       'Instrument bubble tags such as "PT-101", "FIC 205A", "LSH-4102". Matches 1-5 letter function code + 2-5 digit loop number + optional suffix letter(s).',
@@ -22,7 +31,7 @@ export const DEFAULT_PATTERNS: TagPattern[] = [
   {
     id: "equipment",
     name: "Equipment Tag",
-    pattern: String.raw`(?<func>[A-Z]{1,4})-(?<loop>\d{2,4})(?<suffix>[A-Z]{0,2})\b`,
+    pattern: String.raw`(?<![A-Z0-9-])(?<func>[A-Z]{1,4})-(?<loop>\d{2,4})(?<suffix>[A-Z]{0,2})(?![A-Z0-9-])`,
     enabled: true,
     description:
       'Equipment tags such as "P-101A" (pump), "V-201" (vessel), "TK-301" (tank), "E-401B" (exchanger).',

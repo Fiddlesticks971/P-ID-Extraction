@@ -1,10 +1,17 @@
-import type { Bbox, OcrWord, Tag, TagPattern } from "../types";
+import type { Bbox, OcrWord, Tag, TagOrigin, TagPattern } from "../types";
 import { compilePattern, describeFunctionCode } from "./tagPatterns";
 
 /** Minimum fraction of the candidate text a pattern match must cover to be accepted. */
 const MATCH_COVERAGE_THRESHOLD = 0.7;
 /** Two candidate boxes on the same page with IoU above this are treated as duplicates. */
 const DEDUP_IOU_THRESHOLD = 0.4;
+/**
+ * A merged stacked pair may be at most this many times the taller of its
+ * two words. Without the cap, two words that happen to share an x-bucket
+ * but sit far apart vertically merge into a tall phantom tag — a real run
+ * produced a 71x264px "A-1378A" spanning two unrelated bubbles.
+ */
+const MAX_STACK_HEIGHT_FACTOR = 3;
 
 interface Candidate {
   text: string;
@@ -16,6 +23,7 @@ interface Candidate {
   func: string;
   loop: string;
   suffix: string;
+  origin: TagOrigin;
 }
 
 function unionBbox(a: Bbox, b: Bbox): Bbox {
@@ -68,6 +76,7 @@ function tryMatch(
   bbox: Bbox,
   confidence: number,
   page: number,
+  origin: TagOrigin,
   patterns: CompiledPattern[],
 ): Candidate | null {
   const normalized = text.toUpperCase();
@@ -91,6 +100,7 @@ function tryMatch(
       func: groups.func ?? "",
       loop: groups.loop ?? "",
       suffix: groups.suffix ?? "",
+      origin,
     };
     if (!best || match[0].length > best.text.length) {
       best = candidate;
@@ -130,7 +140,7 @@ export function extractTagCandidates(
 
   // Single-word matches.
   for (const word of words) {
-    const match = tryMatch(word.text, word.bbox, word.confidence, word.page, compiled);
+    const match = tryMatch(word.text, word.bbox, word.confidence, word.page, word.origin, compiled);
     if (match) candidates.push(match);
   }
 
@@ -165,12 +175,18 @@ export function extractTagCandidates(
             if (minWidth <= 0 || overlapX / minWidth < 0.3) continue;
 
             const bbox = unionBbox(top.bbox, bottom.bbox);
+            const tallest = Math.max(topHeight, bottom.bbox.y1 - bottom.bbox.y0);
+            if (bbox.y1 - bbox.y0 > tallest * MAX_STACK_HEIGHT_FACTOR) continue;
             const confidence = Math.min(top.confidence, bottom.confidence);
             const dashed = `${top.text}-${bottom.text}`;
             const joined = `${top.text}${bottom.text}`;
-            const dashedMatch = tryMatch(dashed, bbox, confidence, page, compiled);
+            // A bubble's two lines are only ever a bubble tag if both
+            // halves came from the bubble pass.
+            const origin: TagOrigin =
+              top.origin === "bubble" && bottom.origin === "bubble" ? "bubble" : "page";
+            const dashedMatch = tryMatch(dashed, bbox, confidence, page, origin, compiled);
             if (dashedMatch) candidates.push(dashedMatch);
-            const joinedMatch = tryMatch(joined, bbox, confidence, page, compiled);
+            const joinedMatch = tryMatch(joined, bbox, confidence, page, origin, compiled);
             if (joinedMatch) candidates.push(joinedMatch);
           }
         }
@@ -224,6 +240,7 @@ export function candidatesToTags(candidates: Candidate[]): Tag[] {
       state: "uncertain" as const,
       source: "auto" as const,
       patternName: c.patternName,
+      origin: c.origin,
       // A best-effort ISA reading of the function letters, so the column
       // starts populated for review rather than empty. It is a hint from
       // the letter table, not a verified description.

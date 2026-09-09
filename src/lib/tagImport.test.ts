@@ -10,7 +10,9 @@ import {
   type MergeOptions,
 } from "./tagImport";
 import { tagsToCsv } from "./export";
-import type { Tag } from "../types";
+import { extractTagCandidates } from "./grouping";
+import { DEFAULT_PATTERNS } from "./tagPatterns";
+import type { OcrWord, Tag } from "../types";
 
 /**
  * A stand-in for a real seed list, in the same schema as the
@@ -48,6 +50,7 @@ function tag(partial: Partial<Tag> & Pick<Tag, "id" | "text">): Tag {
     state: "uncertain",
     source: "auto",
     patternName: "ISA Instrument Tag",
+    origin: "bubble",
     isaFunction: "",
     loopGroup: "",
     lineOrEquipment: "",
@@ -284,5 +287,42 @@ describe("export / import round trip", () => {
     const [header, row] = parseCsv(csv);
     const centerX = row[header.indexOf("Center_X")];
     expect(centerX).toBe("");
+  });
+});
+
+describe("pattern anchoring", () => {
+  it("does not match a tag inside a line number or spec code", () => {
+    const words: OcrWord[] = [
+      '8"-G-0331-8E1550',
+      "03-BD-0038",
+      '4"-BD-0334-8E1550',
+      "03-G-0046",
+      "FCV-1319",
+      "BDV-1378A",
+    ].map((text, i) => ({
+      text,
+      confidence: 90,
+      page: 1,
+      origin: "page" as const,
+      bbox: { x0: 0, y0: i * 200, x1: 200, y1: i * 200 + 40 },
+    }));
+    const found = extractTagCandidates(words, DEFAULT_PATTERNS, 0.8)
+      .map((c) => c.text)
+      .sort();
+    // A real run produced "E1550", "BD-0038" and friends from exactly these.
+    expect(found).toEqual(["BDV-1378A", "FCV-1319"]);
+  });
+
+  it("does not merge two vertically distant words into one tall phantom tag", () => {
+    const words: OcrWord[] = [
+      { text: "ZSC", confidence: 80, page: 1, origin: "bubble",
+        bbox: { x0: 100, y0: 100, x1: 160, y1: 140 } },
+      // 250px below: a different bubble entirely.
+      { text: "1378A", confidence: 80, page: 1, origin: "bubble",
+        bbox: { x0: 100, y0: 350, x1: 170, y1: 390 } },
+    ];
+    expect(extractTagCandidates(words, DEFAULT_PATTERNS, 8).map((c) => c.text)).not.toContain(
+      "ZSC-1378A",
+    );
   });
 });

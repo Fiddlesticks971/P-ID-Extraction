@@ -37,6 +37,18 @@ const EDITABLE: Record<string, keyof Tag | undefined> = {
 
 const MIN_COLUMN_WIDTH = 32;
 const ALL = "__all__";
+const INSTRUMENTS = "instruments";
+const PAGE_TEXT = "page";
+
+/**
+ * Auto-extracted page text is the noise: on a dense sheet it is mostly
+ * line numbers, spec codes and title-block matter. Bubble reads are the
+ * instruments, and anything a person put there — typed in by hand or
+ * imported from a reviewed list — is never noise, whatever its origin.
+ */
+function isPageNoise(tag: Tag): boolean {
+  return tag.origin === "page" && tag.source === "auto";
+}
 
 /** Distinct non-empty values of a field, for the dropdown filters. */
 function distinct(tags: Tag[], key: keyof Tag): string[] {
@@ -61,6 +73,9 @@ export function TagTable({
   const [loopFilter, setLoopFilter] = useState(ALL);
   const [panelFilter, setPanelFilter] = useState(ALL);
   const [stateFilter, setStateFilter] = useState<string>(ALL);
+  // Page text starts hidden: it is the bulk of the rows and almost none
+  // of the instruments.
+  const [originFilter, setOriginFilter] = useState<string>(INSTRUMENTS);
   const [columnWidths, setColumnWidths] = useState<number[]>(COLUMNS.map((c) => c.width));
 
   function startColumnResize(index: number, e: React.MouseEvent) {
@@ -97,6 +112,8 @@ export function TagTable({
       if (loopFilter !== ALL && t.loopGroup !== loopFilter) return false;
       if (panelFilter !== ALL && t.panel !== panelFilter) return false;
       if (stateFilter !== ALL && t.state !== stateFilter) return false;
+      if (originFilter === INSTRUMENTS && isPageNoise(t)) return false;
+      if (originFilter === PAGE_TEXT && !isPageNoise(t)) return false;
       if (!q) return true;
       return (
         t.text.toLowerCase().includes(q) ||
@@ -108,7 +125,9 @@ export function TagTable({
         t.notes.toLowerCase().includes(q)
       );
     });
-  }, [tags, filter, loopFilter, panelFilter, stateFilter]);
+  }, [tags, filter, loopFilter, panelFilter, stateFilter, originFilter]);
+
+  const pageTagCount = useMemo(() => tags.filter(isPageNoise).length, [tags]);
 
   const counts = useMemo(() => {
     const c: Record<ReviewState, number> = { confirmed: 0, uncertain: 0, illegible: 0 };
@@ -117,7 +136,11 @@ export function TagTable({
   }, [tags]);
 
   const filtersActive =
-    loopFilter !== ALL || panelFilter !== ALL || stateFilter !== ALL || filter.trim() !== "";
+    loopFilter !== ALL ||
+    panelFilter !== ALL ||
+    stateFilter !== ALL ||
+    originFilter !== INSTRUMENTS ||
+    filter.trim() !== "";
 
   return (
     <div className="tag-table-panel">
@@ -152,6 +175,15 @@ export function TagTable({
             </option>
           ))}
         </select>
+        <select
+          value={originFilter}
+          onChange={(e) => setOriginFilter(e.target.value)}
+          title="Where the text came from"
+        >
+          <option value={INSTRUMENTS}>Instruments &amp; imported</option>
+          <option value={PAGE_TEXT}>Other page text</option>
+          <option value={ALL}>Everything</option>
+        </select>
         {filtersActive && (
           <button
             onClick={() => {
@@ -159,6 +191,7 @@ export function TagTable({
               setLoopFilter(ALL);
               setPanelFilter(ALL);
               setStateFilter(ALL);
+              setOriginFilter(INSTRUMENTS);
             }}
           >
             Clear
@@ -171,6 +204,14 @@ export function TagTable({
           {filtered.length === tags.length
             ? `${tags.length} tags`
             : `${filtered.length} of ${tags.length} tags`}
+          {originFilter === INSTRUMENTS && pageTagCount > 0 && (
+            <>
+              {" "}
+              <button className="link" onClick={() => setOriginFilter(ALL)}>
+                (+{pageTagCount} from page text)
+              </button>
+            </>
+          )}
           {" — "}
           <span className="state-dot confirmed" /> {counts.confirmed}
           {"  "}

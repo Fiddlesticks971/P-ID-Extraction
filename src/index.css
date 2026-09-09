@@ -736,3 +736,14 @@ input:not([type]) {
   padding: 2px 4px;
   font-size: 12px;
 }
+
+button.link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}

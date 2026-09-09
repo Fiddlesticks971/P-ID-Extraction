@@ -10,6 +10,7 @@ export interface OcrWord {
   confidence: number;
   bbox: Bbox;
   page: number;
+  origin: TagOrigin;
 }
 
 export interface PageImage {
@@ -20,6 +21,15 @@ export interface PageImage {
 }
 
 export type TagSource = "auto" | "manual" | "imported";
+
+/**
+ * Where a tag's text came from. Bubble reads are isolated, re-rendered
+ * crops of a detected instrument symbol; page reads are whatever the
+ * whole-sheet OCR passes turned up, which on a dense drawing is mostly
+ * line numbers, spec codes and title-block text. Keeping them apart is
+ * what lets the review UI show the instruments without the noise.
+ */
+export type TagOrigin = "bubble" | "page";
 
 /**
  * Review state for a tag, per the extraction rule the project works to: a
@@ -46,6 +56,7 @@ export interface Tag {
   state: ReviewState;
   source: TagSource;
   patternName: string;
+  origin: TagOrigin;
 
   // --- Engineering attributes (instrument index / CMMS fields) ---
   /** ISA 5.1 function description, e.g. "Position Switch - Closed". */

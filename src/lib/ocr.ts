@@ -1,5 +1,5 @@
 import * as Tesseract from "tesseract.js";
-import type { Bbox, DetectedCircle, OcrWord, PageImage } from "../types";
+import type { Bbox, DetectedCircle, OcrWord, PageImage, TagOrigin } from "../types";
 import { cropMaskedCircle, detectCircles, maskRegion } from "./circleDetect";
 import type { MaskShape } from "./circleDetect";
 import type { RegionRenderer } from "./pdfRender";
@@ -102,6 +102,7 @@ async function recognizeCanvas(
   worker: Tesseract.Worker,
   canvas: HTMLCanvasElement,
   page: number,
+  origin: TagOrigin,
   transformBbox?: (bbox: Bbox) => Bbox,
 ): Promise<OcrWord[]> {
   const { data } = await worker.recognize(canvas, {}, { blocks: true });
@@ -117,6 +118,7 @@ async function recognizeCanvas(
             confidence: word.confidence,
             bbox: transformBbox ? transformBbox({ ...word.bbox }) : { ...word.bbox },
             page,
+            origin,
           });
         }
       }
@@ -168,6 +170,11 @@ async function buildBubbleView(
  * bubble, so the normal pattern matching downstream combines them into a
  * tag exactly as it would a real two-line bubble.
  */
+export interface UnreadBubble {
+  page: number;
+  bbox: Bbox;
+}
+
 async function recognizeBubbles(
   worker: Tesseract.Worker,
   page: PageImage,
@@ -175,13 +182,14 @@ async function recognizeBubbles(
   renderRegion: RegionRenderer | undefined,
   baseScale: number,
   onProgress?: (found: number, total: number) => void,
-): Promise<OcrWord[]> {
+): Promise<{ words: OcrWord[]; unread: UnreadBubble[] }> {
   const circles = detectCircles(page.canvas, {
     minRadius: bubbleRadius.min,
     maxRadius: bubbleRadius.max,
   });
 
   const words: OcrWord[] = [];
+  const unread: UnreadBubble[] = [];
   await worker.setParameters({
     tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK,
     tessedit_char_whitelist: TAG_CHAR_WHITELIST,
@@ -194,7 +202,7 @@ async function recognizeBubbles(
 
     for (const variant of BUBBLE_VARIANTS) {
       const view = await buildBubbleView(page, circle, variant, renderRegion, baseScale);
-      const read = await recognizeCanvas(worker, view, page.pageNumber);
+      const read = await recognizeCanvas(worker, view, page.pageNumber, "bubble");
       // One vote per distinct token per variant, so a single noisy read
       // that repeats a token can't outweigh the other variants.
       const seen = new Set<string>();
@@ -213,14 +221,30 @@ async function recognizeBubbles(
 
     const func = pickBest(funcVotes);
     const loop = pickBest(loopVotes);
-    // Stacked halves of the bubble, so the pair-merging step joins them.
     const { cx, cy, r } = circle;
+
+    // A detected bubble that produced no usable token is a real finding,
+    // not a non-event: there is definitely an instrument symbol there, and
+    // dropping it silently is how four tags went missing from a run
+    // against the validation drawing. Report it so the reviewer gets it as
+    // an "illegible" row sitting at the right place on the sheet.
+    if (!func && !loop) {
+      unread.push({
+        page: page.pageNumber,
+        bbox: { x0: cx - r, y0: cy - r, x1: cx + r, y1: cy + r },
+      });
+      onProgress?.(i + 1, circles.length);
+      continue;
+    }
+
+    // Stacked halves of the bubble, so the pair-merging step joins them.
     if (func) {
       words.push({
         text: func.text,
         confidence: func.confidence,
         bbox: { x0: cx - r * 0.7, y0: cy - r * 0.65, x1: cx + r * 0.7, y1: cy - r * 0.05 },
         page: page.pageNumber,
+        origin: "bubble",
       });
     }
     if (loop) {
@@ -229,6 +253,7 @@ async function recognizeBubbles(
         confidence: loop.confidence,
         bbox: { x0: cx - r * 0.85, y0: cy + r * 0.05, x1: cx + r * 0.85, y1: cy + r * 0.65 },
         page: page.pageNumber,
+        origin: "bubble",
       });
     }
     onProgress?.(i + 1, circles.length);
@@ -238,7 +263,7 @@ async function recognizeBubbles(
     tessedit_pageseg_mode: Tesseract.PSM.SPARSE_TEXT,
     tessedit_char_whitelist: "",
   });
-  return words;
+  return { words, unread };
 }
 
 /**
@@ -249,10 +274,16 @@ async function recognizeBubbles(
  * passes since P&ID text is scattered around symbols rather than laid out
  * in paragraphs.
  */
+export interface RecognizeResult {
+  words: OcrWord[];
+  /** Detected bubbles whose text could not be read at all. */
+  unreadBubbles: UnreadBubble[];
+}
+
 export async function recognizePages(
   pages: PageImage[],
   options: RecognizeOptions = {},
-): Promise<OcrWord[]> {
+): Promise<RecognizeResult> {
   const { onProgress, detectBubbles = true, bubbleRadius, renderRegion, baseScale = 1 } = options;
   let currentPage = pages[0]?.pageNumber ?? 1;
 
@@ -281,32 +312,40 @@ export async function recognizePages(
   });
 
   const words: OcrWord[] = [];
+  const unreadBubbles: UnreadBubble[] = [];
 
   for (const page of pages) {
     currentPage = page.pageNumber;
-    words.push(...(await recognizeCanvas(worker, page.canvas, page.pageNumber)));
+    words.push(...(await recognizeCanvas(worker, page.canvas, page.pageNumber, "page")));
 
     const rotated = createRotatedCanvas(page.canvas);
     words.push(
-      ...(await recognizeCanvas(worker, rotated, page.pageNumber, (bbox) =>
+      ...(await recognizeCanvas(worker, rotated, page.pageNumber, "page", (bbox) =>
         unrotateBbox(bbox, page.height),
       )),
     );
 
     if (detectBubbles && bubbleRadius) {
-      words.push(
-        ...(await recognizeBubbles(worker, page, bubbleRadius, renderRegion, baseScale, (found, total) => {
+      const bubbles = await recognizeBubbles(
+        worker,
+        page,
+        bubbleRadius,
+        renderRegion,
+        baseScale,
+        (found, total) => {
           onProgress?.({
             page: page.pageNumber,
             totalPages: pages.length,
             status: `reading circular tags (${found}/${total})`,
             progress: total > 0 ? found / total : 1,
           });
-        })),
+        },
       );
+      words.push(...bubbles.words);
+      unreadBubbles.push(...bubbles.unread);
     }
   }
 
   await worker.terminate();
-  return words;
+  return { words, unreadBubbles };
 }

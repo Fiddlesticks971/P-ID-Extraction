@@ -207,6 +207,7 @@ function seedRowToTag(row: SeedRow, options: MergeOptions): Tag {
     state: row.state ?? options.importedState,
     source: "imported",
     patternName: "Imported",
+    origin: "page",
     isaFunction: row.isaFunction,
     loopGroup: row.loopGroup,
     lineOrEquipment: row.lineOrEquipment,

@@ -10,6 +10,8 @@ import type { LoadedDocument } from "./lib/pdfRender";
 import { recognizePages } from "./lib/ocr";
 import type { OcrProgress } from "./lib/ocr";
 import { extractTagCandidates, candidatesToTags } from "./lib/grouping";
+import { reconcileTags } from "./lib/reconcile";
+import type { UnreadBubble } from "./lib/ocr";
 import { DEFAULT_PATTERNS } from "./lib/tagPatterns";
 import { mergeSeedRows, parseSeedCsv } from "./lib/tagImport";
 import { exportTagsCsv, exportWorkbook, exportAnnotatedPage } from "./lib/export";
@@ -28,6 +30,7 @@ import {
   type NoteRecord,
   type OcrWord,
   type PageImage,
+  type Bbox,
   type ReviewState,
   type Tag,
 } from "./types";
@@ -76,11 +79,65 @@ function defaultSettings(): AppSettings {
 }
 
 let manualTagCounter = 0;
+let unreadCounter = 0;
+
+/**
+ * A detected bubble whose text OCR could not read becomes a visible
+ * "illegible" row sitting at the symbol's location, rather than nothing at
+ * all. On the validation drawing four bubbles were being silently dropped
+ * this way — the worst possible failure for an extraction tool, because
+ * the output looks complete.
+ */
+function unreadBubbleToTag(bubble: { page: number; bbox: Bbox }, reviewer: string): Tag {
+  unreadCounter += 1;
+  return {
+    id: `unread-${Date.now()}-${unreadCounter}`,
+    text: "",
+    functionCode: "",
+    loopNumber: "",
+    suffix: "",
+    description: "",
+    type: "Unreadable bubble",
+    page: bubble.page,
+    bbox: bubble.bbox,
+    confidence: 0,
+    state: "illegible",
+    source: "auto",
+    patternName: "Unreadable bubble",
+    origin: "bubble",
+    isaFunction: "",
+    loopGroup: "",
+    lineOrEquipment: "",
+    panel: "",
+    size: "",
+    failPosition: "",
+    notes: "Instrument bubble detected here, but its text could not be read. Zoom in and type the tag.",
+    continuesOn: "",
+    updatedAt: "",
+    updatedBy: reviewer,
+  };
+}
+
+/** Extraction + the cross-sheet consistency pass, shared by first run and re-run. */
+function buildTags(
+  words: OcrWord[],
+  unread: UnreadBubble[],
+  settings: AppSettings,
+): { tags: Tag[]; correctionCount: number } {
+  const candidates = extractTagCandidates(words, settings.patterns, settings.groupStackedText);
+  const extracted = candidatesToTags(candidates);
+  const { tags, corrections } = reconcileTags(extracted);
+  return {
+    tags: [...tags, ...unread.map((b) => unreadBubbleToTag(b, settings.reviewerName))],
+    correctionCount: corrections.length,
+  };
+}
 
 function App() {
   const [fileName, setFileName] = useState<string | null>(null);
   const [pages, setPages] = useState<PageImage[]>([]);
   const [words, setWords] = useState<OcrWord[]>([]);
+  const [unreadBubbles, setUnreadBubbles] = useState<UnreadBubble[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [meta, setMeta] = useState<DrawingMeta>(emptyDrawingMeta());
   const [lines, setLines] = useState<LineRecord[]>([]);
@@ -136,6 +193,7 @@ function App() {
     setImportSummary(null);
     setTags([]);
     setWords([]);
+    setUnreadBubbles([]);
     setLines([]);
     setNotes([]);
     setSelectedTagId(null);
@@ -161,7 +219,7 @@ function App() {
 
       setStatus("ocr");
       const ocrTimeoutMs = OCR_BASE_TIMEOUT_MS + loadedPages.length * OCR_PER_PAGE_TIMEOUT_MS;
-      const ocrWords = await withTimeout(
+      const ocrResult = await withTimeout(
         recognizePages(loadedPages, {
           onProgress: setOcrProgress,
           detectBubbles: settings.detectBubbles,
@@ -175,12 +233,25 @@ function App() {
         ocrTimeoutMs,
         "OCR timed out. This usually means the English language model could not be downloaded on first use (check your internet connection, or see the README for offline / self-hosted setup instructions) — but very large or dense drawings can also genuinely take this long; try lowering the OCR render scale in Settings and re-uploading if that's the case.",
       );
-      setWords(ocrWords);
+      setWords(ocrResult.words);
+      setUnreadBubbles(ocrResult.unreadBubbles);
 
       setStatus("grouping");
-      const candidates = extractTagCandidates(ocrWords, settings.patterns, settings.groupStackedText);
-      setTags(candidatesToTags(candidates));
+      const built = buildTags(ocrResult.words, ocrResult.unreadBubbles, settings);
+      setTags(built.tags);
       setStatus("ready");
+      const notices: string[] = [];
+      if (ocrResult.unreadBubbles.length > 0) {
+        notices.push(
+          `${ocrResult.unreadBubbles.length} instrument bubble(s) were found on the drawing but could not be read — they are listed as "illegible" at their location on the sheet.`,
+        );
+      }
+      if (built.correctionCount > 0) {
+        notices.push(
+          `${built.correctionCount} reading(s) were adjusted to agree with neighbouring bubbles on the same loop; each says what it was read as in its Notes. Check them before trusting them.`,
+        );
+      }
+      setImportSummary(notices.length > 0 ? notices.join(" ") : null);
     } catch (err) {
       console.error(err);
       setErrorMessage(err instanceof Error ? err.message : String(err));
@@ -192,8 +263,7 @@ function App() {
     if (words.length === 0) return;
     setStatus("grouping");
     window.setTimeout(() => {
-      const candidates = extractTagCandidates(words, settings.patterns, settings.groupStackedText);
-      setTags(candidatesToTags(candidates));
+      setTags(buildTags(words, unreadBubbles, settings).tags);
       setStatus("ready");
     }, 0);
   }
@@ -242,6 +312,7 @@ function App() {
       state: "uncertain",
       source: "manual",
       patternName: "Manual",
+      origin: "bubble",
       isaFunction: "",
       loopGroup: "",
       lineOrEquipment: "",
