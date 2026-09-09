@@ -26,6 +26,9 @@ export interface RecognizeOptions {
 /** Restricting the alphabet keeps stray glyphs ("$", "™", "\") out of tag text. */
 const TAG_CHAR_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-";
 
+/** Absolute URL of the deployment root, so self-hosted OCR assets resolve under any base path. */
+const assetBase = new URL(import.meta.env.BASE_URL, window.location.href);
+
 /**
  * Each bubble is read more than once, under crop/scale combinations that
  * fail in different ways, and the results are voted on field by field.
@@ -258,8 +261,10 @@ export async function recognizePages(
     // offline instead of depending on the jsdelivr CDN. Only the English
     // language model (~a few MB) still downloads on first run; the browser
     // caches it in IndexedDB afterwards.
-    workerPath: "/tesseract/worker.min.js",
-    corePath: "/tesseract/core/tesseract-core-lstm.wasm.js",
+    // Resolved against the deployment base so these still load when the app
+    // is served from a subpath (e.g. GitHub Pages at /<repo>/).
+    workerPath: new URL("tesseract/worker.min.js", assetBase).href,
+    corePath: new URL("tesseract/core/tesseract-core-lstm.wasm.js", assetBase).href,
     logger: (m) => {
       onProgress?.({
         page: currentPage,
