@@ -49,6 +49,27 @@ to a server.
   grouping distance, and the tag regex patterns themselves from the Settings
   panel, then re-run extraction without re-running OCR.
 
+## Hosted build
+
+`.github/workflows/deploy.yml` builds the app and publishes it to GitHub
+Pages on every push to the default branch, so the tool is usable from a URL
+instead of a local dev server:
+
+<https://fiddlesticks971.github.io/P-ID-Extraction/>
+
+Pages has to be switched on once by a repo admin before the first deploy
+succeeds — **Settings → Pages → Build and deployment → Source: GitHub
+Actions**. The workflow token is not permitted to create the Pages site
+itself, so this step cannot be automated. After that, re-run the workflow
+(Actions → Deploy to GitHub Pages → Run workflow) and it deploys on its own
+from then on.
+
+Project sites are served from `/<repo>/`, so the build takes a `BASE_PATH`
+env var; deploying to a root domain instead just needs `BASE_PATH=/`.
+
+Drawings are processed entirely in the browser — nothing is uploaded to a
+server — so a public URL does not expose the drawings anyone opens in it.
+
 ## Getting started
 
 ```bash
