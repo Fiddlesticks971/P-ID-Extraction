@@ -101,6 +101,9 @@ export function PidViewer({
           />
           <div className="overlay">
             {tags.map((tag) => {
+              // Imported rows that were never placed on the sheet have a
+              // zero-area box; drawing them would put a dot in the corner.
+              if (tag.bbox.x1 <= tag.bbox.x0 && tag.bbox.y1 <= tag.bbox.y0) return null;
               const left = (tag.bbox.x0 / page.width) * 100;
               const top = (tag.bbox.y0 / page.height) * 100;
               const width = ((tag.bbox.x1 - tag.bbox.x0) / page.width) * 100;
@@ -113,7 +116,7 @@ export function PidViewer({
                     if (el) boxRefs.current.set(tag.id, el);
                     else boxRefs.current.delete(tag.id);
                   }}
-                  className={`tag-box${tag.confirmed ? " confirmed" : ""}${isSelected ? " selected" : ""}`}
+                  className={`tag-box ${tag.state}${isSelected ? " selected" : ""}`}
                   style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}
                   title={`${tag.text}${tag.description ? " — " + tag.description : ""}`}
                   onClick={(e) => {

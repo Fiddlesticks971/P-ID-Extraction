@@ -1,7 +1,9 @@
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FileUpload } from "./components/FileUpload";
 import { PidViewer } from "./components/PidViewer";
 import { TagTable } from "./components/TagTable";
+import { TagDetail } from "./components/TagDetail";
+import { DrawingPanel } from "./components/DrawingPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { loadFile } from "./lib/pdfRender";
 import type { LoadedDocument } from "./lib/pdfRender";
@@ -9,11 +11,30 @@ import { recognizePages } from "./lib/ocr";
 import type { OcrProgress } from "./lib/ocr";
 import { extractTagCandidates, candidatesToTags } from "./lib/grouping";
 import { DEFAULT_PATTERNS } from "./lib/tagPatterns";
-import { exportTagsCsv, exportTagsXlsx, exportAnnotatedPage } from "./lib/export";
-import type { AppSettings, OcrWord, PageImage, Tag } from "./types";
+import { mergeSeedRows, parseSeedCsv } from "./lib/tagImport";
+import { exportTagsCsv, exportWorkbook, exportAnnotatedPage } from "./lib/export";
+import {
+  deleteDrawing,
+  listDrawings,
+  loadDrawing,
+  saveDrawing,
+  type DrawingSummary,
+} from "./lib/persist";
+import {
+  emptyDrawingMeta,
+  type AppSettings,
+  type DrawingMeta,
+  type LineRecord,
+  type NoteRecord,
+  type OcrWord,
+  type PageImage,
+  type ReviewState,
+  type Tag,
+} from "./types";
 import "./index.css";
 
 type Status = "idle" | "rendering" | "ocr" | "grouping" | "ready" | "error";
+type PanelTab = "tags" | "drawing";
 
 // Each page is OCR'd twice (upright + rotated 90°) plus once more per
 // detected instrument bubble (see ocr.ts) at full drawing resolution,
@@ -50,6 +71,7 @@ function defaultSettings(): AppSettings {
     // default 2.5x scale (bubbles measured ~33-54px radius there).
     bubbleMinRadius: 13,
     bubbleMaxRadius: 22,
+    reviewerName: "",
   };
 }
 
@@ -60,15 +82,25 @@ function App() {
   const [pages, setPages] = useState<PageImage[]>([]);
   const [words, setWords] = useState<OcrWord[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
+  const [meta, setMeta] = useState<DrawingMeta>(emptyDrawingMeta());
+  const [lines, setLines] = useState<LineRecord[]>([]);
+  const [notes, setNotes] = useState<NoteRecord[]>([]);
+  const [drawingId, setDrawingId] = useState<string | null>(null);
+  const [library, setLibrary] = useState<DrawingSummary[]>([]);
+  const [saveState, setSaveState] = useState<string | null>(null);
   const [currentPageIndex, setCurrentPageIndex] = useState(0);
   const [selectedTagId, setSelectedTagId] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings());
   const [showSettings, setShowSettings] = useState(false);
   const [addMode, setAddMode] = useState(false);
+  const [panelTab, setPanelTab] = useState<PanelTab>("tags");
   const [status, setStatus] = useState<Status>("idle");
   const [ocrProgress, setOcrProgress] = useState<OcrProgress | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [importSummary, setImportSummary] = useState<string | null>(null);
   const documentRef = useRef<LoadedDocument | null>(null);
+  const sourceFileRef = useRef<File | null>(null);
+  const seedInputRef = useRef<HTMLInputElement>(null);
 
   const busy = status === "rendering" || status === "ocr" || status === "grouping";
   const currentPage = pages[currentPageIndex] ?? null;
@@ -77,15 +109,46 @@ function App() {
     () => tags.filter((t) => t.page === (currentPage?.pageNumber ?? -1)),
     [tags, currentPage],
   );
+  const selectedTag = useMemo(
+    () => tags.find((t) => t.id === selectedTagId) ?? null,
+    [tags, selectedTagId],
+  );
 
-  async function processFile(file: File) {
-    setFileName(file.name);
+  const refreshLibrary = useCallback(async () => {
+    try {
+      setLibrary(await listDrawings());
+    } catch (err) {
+      console.warn("Could not read the local project store", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    // Reading the saved-drawing list is exactly the "synchronize with an
+    // external system" case effects are for — IndexedDB is the external
+    // system, and the state is set after the await, not synchronously.
+    // eslint-disable-next-line react/set-state-in-effect
+    void refreshLibrary();
+  }, [refreshLibrary]);
+
+  function resetDrawingState(name: string) {
+    setFileName(name);
     setErrorMessage(null);
+    setImportSummary(null);
     setTags([]);
     setWords([]);
+    setLines([]);
+    setNotes([]);
     setSelectedTagId(null);
     setCurrentPageIndex(0);
     setOcrProgress(null);
+    setSaveState(null);
+  }
+
+  async function processFile(file: File) {
+    resetDrawingState(file.name);
+    setMeta({ ...emptyDrawingMeta(file.name) });
+    setDrawingId(`drawing-${Date.now()}`);
+    sourceFileRef.current = file;
 
     try {
       setStatus("rendering");
@@ -135,8 +198,15 @@ function App() {
     }, 0);
   }
 
+  /** Every edit stamps the audit trail, since this data feeds other systems. */
   function updateTag(id: string, patch: Partial<Tag>) {
-    setTags((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+    setTags((prev) =>
+      prev.map((t) =>
+        t.id === id
+          ? { ...t, ...patch, updatedAt: new Date().toISOString(), updatedBy: settings.reviewerName }
+          : t,
+      ),
+    );
   }
 
   function deleteTag(id: string) {
@@ -167,15 +237,131 @@ function App() {
         y1: Math.min(currentPage.height, cy + boxH / 2),
       },
       confidence: 100,
-      confirmed: true,
+      // Manually added tags are unreviewed by definition — they start
+      // "uncertain" and are confirmed once checked against the drawing.
+      state: "uncertain",
       source: "manual",
       patternName: "Manual",
+      isaFunction: "",
+      loopGroup: "",
+      lineOrEquipment: "",
+      panel: "",
+      size: "",
+      failPosition: "",
+      notes: "",
+      continuesOn: "",
+      updatedAt: new Date().toISOString(),
+      updatedBy: settings.reviewerName,
     };
     setTags((prev) => [...prev, newTag]);
     setSelectedTagId(newTag.id);
     setAddMode(false);
   }
 
+  /**
+   * Imports a reviewed seed list and merges it onto whatever is currently
+   * on screen: matched rows enrich the detected tags (keeping their
+   * position), unmatched rows are appended so nothing in the reviewed list
+   * is lost.
+   */
+  async function importSeedFile(file: File) {
+    try {
+      const { rows, warnings } = parseSeedCsv(await file.text());
+      if (rows.length === 0) {
+        setImportSummary(warnings.join(" ") || "No rows found in that file.");
+        return;
+      }
+      const result = mergeSeedRows(tags, rows, {
+        page: currentPage?.pageNumber ?? 1,
+        importedState: "confirmed",
+        reviewer: settings.reviewerName,
+        overwriteExisting: false,
+      });
+      setTags(result.tags);
+      const list = (items: string[]) =>
+        `${items.slice(0, 10).join(", ")}${items.length > 10 ? ` (+${items.length - 10} more)` : ""}`;
+      const parts = [
+        `Imported ${rows.length} rows from ${file.name}: ${result.matched} matched a tag found on the drawing.`,
+      ];
+      if (result.missingFromDrawing.length > 0) {
+        parts.push(
+          `${result.missingFromDrawing.length} in the list but not found on the drawing (added without a position — check these first): ${list(result.missingFromDrawing)}.`,
+        );
+      }
+      if (result.unmatchedTagTexts.length > 0) {
+        parts.push(
+          `${result.unmatchedTagTexts.length} found on the drawing but not in the list: ${list(result.unmatchedTagTexts)}.`,
+        );
+      }
+      if (result.duplicateTagTexts.length > 0) {
+        parts.push(`Read more than once: ${list(result.duplicateTagTexts)}.`);
+      }
+      if (warnings.length > 0) parts.push(warnings.join(" "));
+      setImportSummary(parts.join(" "));
+    } catch (err) {
+      setImportSummary(`Could not read that file: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  async function handleSaveDrawing() {
+    if (!drawingId) return;
+    try {
+      setSaveState("Saving…");
+      await saveDrawing(
+        { id: drawingId, meta, tags, lines, notes, savedAt: new Date().toISOString() },
+        sourceFileRef.current ?? undefined,
+      );
+      setSaveState(`Saved ${new Date().toLocaleTimeString()}`);
+      await refreshLibrary();
+    } catch (err) {
+      setSaveState(`Save failed: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  /** Reopens a saved sheet: re-renders the stored file, restores the reviewed data. */
+  async function handleOpenDrawing(id: string) {
+    try {
+      const stored = await loadDrawing(id);
+      if (!stored) return;
+      const { record, file } = stored;
+      if (!file) {
+        setErrorMessage("That drawing was saved without its source file and cannot be reopened.");
+        return;
+      }
+      resetDrawingState(file.name);
+      sourceFileRef.current = file;
+      setDrawingId(record.id);
+      setMeta(record.meta);
+      setStatus("rendering");
+      const loaded = await loadFile(file, settings.ocrScale);
+      documentRef.current?.destroy();
+      documentRef.current = loaded;
+      setPages(loaded.pages);
+      setTags(record.tags);
+      setLines(record.lines);
+      setNotes(record.notes);
+      setStatus("ready");
+      setSaveState(`Opened, last saved ${new Date(record.savedAt).toLocaleString()}`);
+    } catch (err) {
+      console.error(err);
+      setErrorMessage(err instanceof Error ? err.message : String(err));
+      setStatus("error");
+    }
+  }
+
+  async function handleDeleteDrawing(id: string) {
+    await deleteDrawing(id);
+    if (id === drawingId) setDrawingId(null);
+    await refreshLibrary();
+  }
+
+  function setStateAll(state: ReviewState) {
+    const stamp = { updatedAt: new Date().toISOString(), updatedBy: settings.reviewerName };
+    setTags((prev) => prev.map((t) => ({ ...t, state, ...stamp })));
+  }
+
+  const exportBaseName =
+    meta.drawingNumber.trim() || fileName?.replace(/\.[^.]+$/, "") || "pid-tags";
   const progressPct = ocrProgress ? Math.round(ocrProgress.progress * 100) : 0;
 
   return (
@@ -192,10 +378,27 @@ function App() {
           >
             {addMode ? "Cancel Add" : "+ Add Tag"}
           </button>
-          <button onClick={() => exportTagsCsv(tags)} disabled={tags.length === 0}>
+          <button onClick={() => seedInputRef.current?.click()} disabled={busy}>
+            Import Tag List
+          </button>
+          <input
+            ref={seedInputRef}
+            type="file"
+            accept=".csv,.txt"
+            hidden
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void importSeedFile(file);
+              e.target.value = "";
+            }}
+          />
+          <button onClick={() => exportTagsCsv(tags, `${exportBaseName}.csv`)} disabled={tags.length === 0}>
             Export CSV
           </button>
-          <button onClick={() => exportTagsXlsx(tags)} disabled={tags.length === 0}>
+          <button
+            onClick={() => exportWorkbook(tags, meta, lines, notes, `${exportBaseName}.xlsx`)}
+            disabled={tags.length === 0}
+          >
             Export XLSX
           </button>
           <button
@@ -230,6 +433,15 @@ function App() {
         <div className="error-banner">Error: {errorMessage}</div>
       )}
 
+      {importSummary && (
+        <div className="info-banner">
+          {importSummary}
+          <button className="small" onClick={() => setImportSummary(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+
       <div className="app-body">
         <PidViewer
           page={currentPage}
@@ -242,15 +454,69 @@ function App() {
           addMode={addMode}
           onAddTagAt={addTagAt}
         />
-        <TagTable
-          tags={tags}
-          selectedTagId={selectedTagId}
-          onSelectTag={setSelectedTagId}
-          onUpdateTag={updateTag}
-          onDeleteTag={deleteTag}
-          onConfirmAll={() => setTags((prev) => prev.map((t) => ({ ...t, confirmed: true })))}
-          onDeleteUnconfirmed={() => setTags((prev) => prev.filter((t) => t.confirmed))}
-        />
+        <div className="side-panel">
+          <div className="panel-tabs">
+            <button
+              className={panelTab === "tags" ? "active" : ""}
+              onClick={() => setPanelTab("tags")}
+            >
+              Tags ({tags.length})
+            </button>
+            <button
+              className={panelTab === "drawing" ? "active" : ""}
+              onClick={() => setPanelTab("drawing")}
+            >
+              Drawing
+            </button>
+          </div>
+
+          {panelTab === "tags" ? (
+            <>
+              <TagTable
+                tags={tags}
+                selectedTagId={selectedTagId}
+                onSelectTag={setSelectedTagId}
+                onUpdateTag={updateTag}
+                onDeleteTag={deleteTag}
+                onSetStateAll={setStateAll}
+                onDeleteUnconfirmed={() =>
+                  setTags((prev) => prev.filter((t) => t.state === "confirmed"))
+                }
+              />
+              {selectedTag && (
+                <TagDetail
+                  tag={selectedTag}
+                  page={currentPage}
+                  onUpdateTag={updateTag}
+                  onClose={() => setSelectedTagId(null)}
+                  onLocate={() => {
+                    const index = pages.findIndex((p) => p.pageNumber === selectedTag.page);
+                    if (index >= 0) setCurrentPageIndex(index);
+                    // Re-setting the id re-triggers the viewer's scroll effect.
+                    setSelectedTagId(null);
+                    window.setTimeout(() => setSelectedTagId(selectedTag.id), 0);
+                  }}
+                />
+              )}
+            </>
+          ) : (
+            <DrawingPanel
+              meta={meta}
+              onMetaChange={(patch) => setMeta((prev) => ({ ...prev, ...patch }))}
+              lines={lines}
+              onLinesChange={setLines}
+              notes={notes}
+              onNotesChange={setNotes}
+              library={library}
+              currentDrawingId={drawingId}
+              onSave={handleSaveDrawing}
+              onOpen={(id) => void handleOpenDrawing(id)}
+              onDelete={(id) => void handleDeleteDrawing(id)}
+              saveState={saveState}
+              hasDrawing={pages.length > 0}
+            />
+          )}
+        </div>
       </div>
 
       {showSettings && (
@@ -261,7 +527,11 @@ function App() {
               onChange={setSettings}
               onClose={() => setShowSettings(false)}
               onReapplyPatterns={reapplyPatterns}
-              onResetDefaults={() => setSettings(defaultSettings())}
+              // The reviewer's name identifies a person, not an extraction
+              // setting, so resetting the tuning doesn't clear it.
+              onResetDefaults={() =>
+                setSettings((prev) => ({ ...defaultSettings(), reviewerName: prev.reviewerName }))
+              }
             />
           </div>
         </div>

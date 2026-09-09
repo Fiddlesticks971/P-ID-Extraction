@@ -266,6 +266,11 @@ input:not([type]) {
   border-color: var(--confirmed);
   background: color-mix(in srgb, var(--confirmed) 12%, transparent);
 }
+.tag-box.illegible {
+  border-color: var(--danger);
+  border-style: dashed;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
 .tag-box.selected {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
@@ -478,4 +483,256 @@ input:not([type]) {
   margin-top: auto;
   padding-top: 16px;
   border-top: 1px solid var(--border);
+}
+
+/* ---------------------------------------------------------------------
+   Review workflow: side panel tabs, tag detail, drawing record
+   --------------------------------------------------------------------- */
+
+.side-panel {
+  width: 640px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+}
+
+.panel-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.panel-tabs button {
+  border-radius: 6px 6px 0 0;
+  border-bottom: none;
+  background: transparent;
+}
+.panel-tabs button.active {
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+  color: var(--text-h);
+  font-weight: 600;
+}
+
+/* The table panel now lives inside .side-panel, which owns the width. */
+.side-panel .tag-table-panel {
+  width: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.tag-table-toolbar.secondary {
+  gap: 6px;
+  font-size: 12px;
+}
+.tag-table-toolbar select {
+  max-width: 130px;
+}
+
+.info-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.info-banner button {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.state-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+.state-dot.confirmed { background: var(--confirmed); }
+.state-dot.uncertain { background: var(--unconfirmed); }
+.state-dot.illegible { background: var(--danger); }
+
+.tag-table tr.state-confirmed td:first-child { box-shadow: inset 3px 0 0 var(--confirmed); }
+.tag-table tr.state-uncertain td:first-child { box-shadow: inset 3px 0 0 var(--unconfirmed); }
+.tag-table tr.state-illegible td:first-child { box-shadow: inset 3px 0 0 var(--danger); }
+
+.state-select {
+  width: 100%;
+  font-size: 11px;
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 2px;
+}
+.state-select.confirmed { color: var(--confirmed); }
+.state-select.uncertain { color: var(--unconfirmed); }
+.state-select.illegible { color: var(--danger); }
+
+/* Tag detail (side-by-side verification) */
+.tag-detail {
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  max-height: 46%;
+  overflow: auto;
+  flex-shrink: 0;
+}
+.tag-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+}
+.tag-detail-header strong {
+  font-family: var(--mono);
+  color: var(--text-h);
+}
+.tag-detail-header button:last-child { margin-left: auto; }
+.tag-detail-body {
+  display: flex;
+  gap: 12px;
+  padding: 10px;
+  align-items: flex-start;
+}
+.tag-detail-crop {
+  flex-shrink: 0;
+  width: 260px;
+}
+.tag-crop {
+  width: 260px;
+  height: 130px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fff;
+  display: block;
+}
+.tag-crop-empty {
+  width: 260px;
+  min-height: 60px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  padding: 10px;
+  font-size: 12px;
+  color: var(--text);
+  opacity: 0.8;
+}
+.tag-detail-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.tag-detail-state select { flex: 1; }
+.tag-detail-audit {
+  margin: 6px 0 0;
+  font-size: 11px;
+}
+.tag-detail-fields {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 10px;
+  min-width: 0;
+}
+.tag-detail-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  min-width: 0;
+}
+.tag-detail-fields label span { opacity: 0.75; }
+
+/* Drawing record panel */
+.drawing-panel {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.drawing-panel section { display: flex; flex-direction: column; gap: 8px; }
+.drawing-panel h3 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-h);
+}
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.section-head h3 { flex: 1; }
+.meta-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 10px;
+}
+.meta-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  min-width: 0;
+}
+.meta-grid label span { opacity: 0.75; }
+
+.add-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.add-row input { flex: 1; min-width: 0; }
+.add-row input.note-flag { flex: 0 0 70px; font-family: var(--mono); }
+
+.mini-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.mini-table th {
+  text-align: left;
+  font-weight: 600;
+  padding: 4px 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  opacity: 0.75;
+}
+.mini-table td {
+  padding: 2px 2px;
+  border-bottom: 1px solid var(--border);
+}
+.mini-table input { width: 100%; }
+
+.library-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.library-row.current { border-color: var(--accent); }
+.library-row-main { flex: 1; min-width: 0; font-size: 12px; }
+.library-row-main strong { font-family: var(--mono); color: var(--text-h); }
+
+/* The review table carries many narrow columns; trim the padding so the
+   declared widths hold inside the side panel instead of overflowing. */
+.side-panel .tag-table th,
+.side-panel .tag-table td {
+  padding-left: 4px;
+  padding-right: 4px;
+}
+.side-panel .tag-table td input {
+  width: 100%;
+  padding: 2px 4px;
+  font-size: 12px;
 }

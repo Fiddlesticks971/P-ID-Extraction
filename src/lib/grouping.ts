@@ -1,5 +1,5 @@
 import type { Bbox, OcrWord, Tag, TagPattern } from "../types";
-import { compilePattern } from "./tagPatterns";
+import { compilePattern, describeFunctionCode } from "./tagPatterns";
 
 /** Minimum fraction of the candidate text a pattern match must cover to be accepted. */
 const MATCH_COVERAGE_THRESHOLD = 0.7;
@@ -219,8 +219,23 @@ export function candidatesToTags(candidates: Candidate[]): Tag[] {
       page: c.page,
       bbox: c.bbox,
       confidence: c.confidence,
-      confirmed: false,
+      // Nothing read by OCR is trusted until a human has looked at it
+      // against the drawing, so every extracted tag starts "uncertain".
+      state: "uncertain" as const,
       source: "auto" as const,
       patternName: c.patternName,
+      // A best-effort ISA reading of the function letters, so the column
+      // starts populated for review rather than empty. It is a hint from
+      // the letter table, not a verified description.
+      isaFunction: describeFunctionCode(c.func),
+      loopGroup: c.loop ? `${c.loop}${c.suffix}` : "",
+      lineOrEquipment: "",
+      panel: "",
+      size: "",
+      failPosition: "",
+      notes: "",
+      continuesOn: "",
+      updatedAt: "",
+      updatedBy: "",
     }));
 }

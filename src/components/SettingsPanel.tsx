@@ -47,6 +47,20 @@ export function SettingsPanel({
       </div>
 
       <label className="settings-field">
+        Reviewer
+        <input
+          type="text"
+          value={settings.reviewerName}
+          placeholder="Your name or initials"
+          onChange={(e) => onChange({ ...settings, reviewerName: e.target.value })}
+        />
+        <span className="muted">
+          Recorded against every tag edit, so the exported table shows who last confirmed each
+          reading.
+        </span>
+      </label>
+
+      <label className="settings-field">
         OCR render scale ({settings.ocrScale.toFixed(1)}x)
         <input
           type="range"

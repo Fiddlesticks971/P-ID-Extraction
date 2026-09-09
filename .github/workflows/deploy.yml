@@ -31,6 +31,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      - run: npm test
       # Project sites are served from /<repo>/, so the bundle needs that base.
       - run: npm run build
         env:

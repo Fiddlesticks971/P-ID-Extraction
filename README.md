@@ -38,11 +38,37 @@ to a server.
   box on the drawing (amber = unverified, green = verified) so you can
   visually confirm it against the source P&ID. Click a box or a table row
   to select/scroll to the other.
-- **Editable, exportable table** — fix OCR mistakes, add descriptions,
-  verify/reject tags, or manually place a tag by clicking the drawing.
-  Export to CSV or XLSX, or export the current page as a highlighted PNG for
-  handoff/verification records. Exports carry each tag's position (`Center
-  X`/`Center Y`/`Width`/`Height`, in page-raster pixels at the OCR render
+- **Instrument-index data model** — every tag carries the fields an
+  instrument index or CMMS import actually needs: ISA function, description,
+  loop/group, line or parent equipment, panel, size, fail position, notes,
+  and a match-line "continues on" reference.
+- **Three-state review, not a checkbox** — a tag is `uncertain` (the default
+  for anything OCR produced), `confirmed` (checked against the drawing), or
+  `illegible` (genuinely unreadable). Nothing is ever guessed into a
+  plausible-looking value, and the state travels with the export.
+- **Side-by-side verification** — selecting a tag shows the cropped region of
+  the drawing it was read from, magnified, next to its editable fields.
+- **Seed-list import and reconciliation** — import a reviewed tag list
+  (`instrument_tags.csv` and similar). Rows that match a detected tag enrich
+  it in place, keeping the position OCR found; rows with no match are added.
+  The import then reports the three ways the two disagree: in the list but
+  not on the drawing, on the drawing but not in the list, and read more than
+  once. See below.
+- **Drawing record** — title-block metadata, the sheet's line numbers (parsed
+  into size/service/spec), and hex-flagged note references, all exported
+  alongside the tags.
+- **Multi-drawing project library** — drawings save to the browser's own
+  storage (IndexedDB), source file included, so a project can span several
+  sheets and a part-finished review can be reopened later. Nothing is
+  uploaded anywhere.
+- **Audit trail** — every edit records a timestamp and the reviewer name set
+  in Settings.
+- **Editable, exportable table** — filter by tag text, loop group, panel or
+  review state; fix OCR mistakes, or manually place a tag by clicking the
+  drawing. Export to CSV or a multi-sheet XLSX (Tags / Drawing / Lines /
+  Notes), or export the current page as a highlighted PNG for
+  handoff/verification records. Exports carry each tag's position (`Center_X`
+  /`Center_Y`/`Width`/`Height`, in page-raster pixels at the OCR render
   scale) so two runs of the same drawing can be diffed by location rather
   than by text — which matters precisely when the text is what differs.
 - **Configurable extraction** — tune OCR render scale, the stacked-text
@@ -74,7 +100,10 @@ server — so a public URL does not expose the drawings anyone opens in it.
 
 ```bash
 npm install
-npm run dev
+npm run dev     # start the app
+npm test        # import/export round-trip tests
+npm run lint    # oxlint
+npm run build   # typecheck + production build
 ```
 
 Then open the printed local URL, upload a P&ID, and wait for OCR to finish
@@ -117,6 +146,58 @@ highlighted boxes against the source drawing before relying on the exported
 table. False positives can be deleted and false negatives added manually
 with the "+ Add Tag" tool.
 
+## Working from a reviewed tag list
+
+Extraction and review are two different jobs, and the second one is where
+the data actually becomes trustworthy. If you already have a reviewed tag
+list for a drawing — the CSV a careful extraction pass produces, with
+columns like:
+
+```
+Tag,ISA_Function,Description,Loop_Group,Line_or_Equipment,Panel,Size,Fail_Position,Notes
+```
+
+— then **Import Tag List** merges it against whatever the app read off the
+sheet. Header names are matched loosely (`Loop_Group`, `Loop Group` and
+`loop group` are the same column), so a hand-written file and one this app
+exported both import without renaming anything.
+
+Matching is on the tag text with separators and case ignored, since a typed
+list and an OCR reading rarely agree on them (`ZSC-1378A` / `ZSC 1378A` /
+`zsc1378a`). For each row:
+
+- **Matched** — the detected tag keeps the position OCR found it at (the
+  list has no way to know that) and gains the reviewed attributes. Its text
+  is corrected to the list's spelling and its state becomes `confirmed`.
+  Fields you have already edited are not overwritten.
+- **Unmatched** — added as a row with no position, so nothing in the
+  reviewed list is silently dropped. Place it with **+ Add Tag** if you want
+  it on the overlay.
+
+The import then reports the disagreements, which is the part worth reading:
+
+| Reported as | What it usually means |
+| --- | --- |
+| In the list but not found on the drawing | The extractor missed it, or misread it — a dropped suffix letter is the classic case |
+| On the drawing but not in the list | A false positive, or something the reviewed list forgot |
+| Read more than once | Two symbols resolved to the same identity, so at least one is wrong |
+
+On the validation drawing this turns the known weak spot into an explicit
+worklist rather than a silent error: of a 32-row seed list against the 24
+bubbles the app reads, 20 match and enrich; the four tags whose trailing
+suffix the OCR drops (`ZSC-1378A`, `ZSO-1378A`, `BDV-1378A`, `SVO-1321A`)
+are reported as "in the list but not found", their misreadings
+(`ZSC-13784`, `ZSO-1378`, `BDV-13784`) as "on the drawing but not in the
+list", and the collision where `SVO-1321A` degrades into the already-real
+`SVO-1321` is caught as "read more than once".
+
+A note on quoting: sizes on a P&ID are written `8"`, `20"x10"`,
+`XX"-BD-XXXX-3D4`, and hand-written CSVs do not escape those inch marks.
+Strict RFC 4180 parsing reads the first one as the start of a quoted field
+and swallows the rest of the file into a single cell, so the parser here
+only treats a quote as a delimiter at the *start* of a field and as a
+literal inch mark anywhere else.
+
 ### Customizing tag patterns
 
 Open **Settings** to edit the regex patterns used for matching. Each pattern
@@ -156,6 +237,29 @@ plus 5 more per page — real OCR on a dense, high-resolution drawing is
 legitimately slow) with a clear error message rather than hanging
 indefinitely.
 
+## Relationship to the extraction framework spec
+
+This app implements the data model and review workflow from the project's
+"P&ID Instrument Tag Extraction & Application Build Framework" document,
+with two deliberate departures from the architecture it recommends:
+
+- **No Python/FastAPI/SQLite backend.** The spec's stated goal was a tool
+  usable without deployment overhead; a static browser app has strictly less
+  of that than a local server — nothing to install, nothing to run, and the
+  drawings never leave the machine. SQLite's role is filled by IndexedDB,
+  with the same entity shapes (Drawing / Tag / Line / Note).
+- **OCR auto-extraction is kept, not deferred to v2.** The spec listed it as
+  a v1 non-goal, which was written before the extraction pipeline existed.
+  It does exist, it is measured against a real drawing (see below), and the
+  seed-CSV import means the human-in-the-loop path the spec asked for works
+  too — the two complement each other rather than competing.
+
+Everything else the spec asks for is implemented: the entity schema, seed
+CSV import, the high-resolution render pipeline, side-by-side tag review,
+three-state confidence flagging, search and filter by prefix/loop/panel/
+state, CSV+XLSX export, cross-drawing match-line references, an audit
+trail, and tests for import/export round-tripping.
+
 ## Tech stack
 
 - React + TypeScript + Vite
@@ -163,6 +267,8 @@ indefinitely.
 - [tesseract.js](https://github.com/naptha/tesseract.js) for in-browser OCR
 - [xlsx](https://github.com/SheetJS/sheetjs) for spreadsheet export
 - [file-saver](https://github.com/eligrey/FileSaver.js) for triggering downloads
+- IndexedDB for the local project store — no backend, no server
+- [vitest](https://vitest.dev) for the import/export tests (`npm test`)
 
 ## Known limitations
 
