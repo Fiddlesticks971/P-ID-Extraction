@@ -173,6 +173,9 @@ async function buildBubbleView(
 export interface UnreadBubble {
   page: number;
   bbox: Bbox;
+  /** Whatever half of the tag did come through, if either did. */
+  partialFunc: string;
+  partialLoop: string;
 }
 
 async function recognizeBubbles(
@@ -223,15 +226,19 @@ async function recognizeBubbles(
     const loop = pickBest(loopVotes);
     const { cx, cy, r } = circle;
 
-    // A detected bubble that produced no usable token is a real finding,
-    // not a non-event: there is definitely an instrument symbol there, and
-    // dropping it silently is how four tags went missing from a run
-    // against the validation drawing. Report it so the reviewer gets it as
-    // an "illegible" row sitting at the right place on the sheet.
-    if (!func && !loop) {
+    // A detected bubble that did not yield a *complete* tag is a real
+    // finding, not a non-event: there is definitely an instrument symbol
+    // there. Both halves are required, because a lone function code or a
+    // lone loop number never matches a tag pattern downstream and so
+    // vanishes just as silently as reading nothing at all — which is how
+    // four bubbles stayed missing even after the first version of this
+    // check, which only fired when *neither* half was read.
+    if (!func || !loop) {
       unread.push({
         page: page.pageNumber,
         bbox: { x0: cx - r, y0: cy - r, x1: cx + r, y1: cy + r },
+        partialFunc: func?.text ?? "",
+        partialLoop: loop?.text ?? "",
       });
       onProgress?.(i + 1, circles.length);
       continue;

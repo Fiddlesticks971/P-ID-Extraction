@@ -30,7 +30,6 @@ import {
   type NoteRecord,
   type OcrWord,
   type PageImage,
-  type Bbox,
   type ReviewState,
   type Tag,
 } from "./types";
@@ -82,19 +81,27 @@ let manualTagCounter = 0;
 let unreadCounter = 0;
 
 /**
- * A detected bubble whose text OCR could not read becomes a visible
+ * A detected bubble whose tag OCR could not read in full becomes a visible
  * "illegible" row sitting at the symbol's location, rather than nothing at
  * all. On the validation drawing four bubbles were being silently dropped
  * this way — the worst possible failure for an extraction tool, because
  * the output looks complete.
  */
-function unreadBubbleToTag(bubble: { page: number; bbox: Bbox }, reviewer: string): Tag {
+function unreadBubbleToTag(bubble: UnreadBubble, reviewer: string): Tag {
   unreadCounter += 1;
+  const { partialFunc, partialLoop } = bubble;
+  // Show whatever did come through — half a tag at the right place is a
+  // real head start for whoever has to type it in.
+  const text = partialFunc || partialLoop ? `${partialFunc || "?"}-${partialLoop || "?"}` : "";
+  const detail =
+    partialFunc || partialLoop
+      ? ` Only "${partialFunc || partialLoop}" could be read.`
+      : "";
   return {
     id: `unread-${Date.now()}-${unreadCounter}`,
-    text: "",
-    functionCode: "",
-    loopNumber: "",
+    text,
+    functionCode: partialFunc,
+    loopNumber: partialLoop,
     suffix: "",
     description: "",
     type: "Unreadable bubble",
@@ -111,7 +118,7 @@ function unreadBubbleToTag(bubble: { page: number; bbox: Bbox }, reviewer: strin
     panel: "",
     size: "",
     failPosition: "",
-    notes: "Instrument bubble detected here, but its text could not be read. Zoom in and type the tag.",
+    notes: `Instrument bubble detected here, but its tag could not be read in full.${detail} Zoom in and complete it.`,
     continuesOn: "",
     updatedAt: "",
     updatedBy: reviewer,

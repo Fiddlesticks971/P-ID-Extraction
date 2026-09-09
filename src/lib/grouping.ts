@@ -7,11 +7,14 @@ const MATCH_COVERAGE_THRESHOLD = 0.7;
 const DEDUP_IOU_THRESHOLD = 0.4;
 /**
  * A merged stacked pair may be at most this many times the taller of its
- * two words. Without the cap, two words that happen to share an x-bucket
- * but sit far apart vertically merge into a tall phantom tag — a real run
- * produced a 71x264px "A-1378A" spanning two unrelated bubbles.
+ * two words. Two lines of text plus normal leading occupy about 2.2 line
+ * heights (a real bubble tag measures 2.17), so anything beyond 2.5 is not
+ * two lines of one tag. Without the cap, two tall words sharing an x-bucket
+ * merge into a phantom — a real run produced a 71x264px "A-1378A" spanning
+ * two unrelated bubbles, and a factor of 3 was still loose enough to admit
+ * it.
  */
-const MAX_STACK_HEIGHT_FACTOR = 3;
+const MAX_STACK_HEIGHT_FACTOR = 2.5;
 
 interface Candidate {
   text: string;
@@ -199,6 +202,16 @@ export function extractTagCandidates(
 
 function dedupeCandidates(candidates: Candidate[]): Candidate[] {
   const sorted = [...candidates].sort((a, b) => {
+    // Bubble reads win outright over whole-page reads of the same symbol.
+    // The bubble pass re-renders the crop from vector source, masks the
+    // connecting lines away and reads it under a tag-only whitelist; the
+    // page pass sees the same glyphs buried in a dense drawing. Tesseract's
+    // self-reported confidence does not know any of that, and letting it
+    // decide meant a page duplicate could displace the bubble candidate —
+    // which then dropped the tag out of the cross-sheet reconciliation
+    // entirely, because that only trusts bubble reads. On the validation
+    // drawing this silently cost five corrections.
+    if (a.origin !== b.origin) return a.origin === "bubble" ? -1 : 1;
     if (b.text.length !== a.text.length) return b.text.length - a.text.length;
     return b.confidence - a.confidence;
   });

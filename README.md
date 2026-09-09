@@ -299,7 +299,8 @@ figures.
 | Whole-page OCR only | 0/24 |
 | Single upscaled raster crop | 5/24 |
 | Vector re-render + two views + field voting | 12/24 |
-| **+ cross-sheet reconciliation (current)** | **19/24** |
+| + cross-sheet reconciliation, as first shipped | 14/24 |
+| **+ bubble reads winning the dedupe (current)** | **19/24** |
 
 The last row is the fix for what the raw OCR gets wrong, and it does not
 depend on OCR getting better. A P&ID repeats itself: a loop number is
@@ -325,13 +326,32 @@ changed. Nothing here invents a reading no OCR pass produced — the one
 remaining error on the test drawing (`ZSC-1378A` read as `A-1378`) is left
 exactly as read, because no rule can recover it honestly.
 
-Two other findings from that same real run, both now fixed:
+The 14/24 row is worth keeping visible, because it is where reconciliation
+first shipped and it under-delivered: only two of the seven corrections
+fired. The cause was upstream. Both OCR passes read the same bubble, the
+whole-page pass reported higher confidence, and the duplicate-resolution
+step picked it on that basis — so the tag ended up marked as page text and
+reconciliation, which only trusts bubble reads, skipped it. Tesseract's
+confidence knows nothing about the bubble pass having re-rendered the crop
+from vector source and masked the connector lines away. **A bubble read now
+wins outright over a whole-page read of the same symbol**, and all seven
+corrections fire.
+
+That bug was diagnosable only because a correction note said "3 nearby
+bubbles on this loop" when the export plainly showed five tags on loop
+1321. Exports now carry an `Origin` column for exactly this reason.
+
+Other findings from the same real runs, all now fixed:
 
 - **Four detected bubbles produced no tag at all and were silently
   dropped.** This is the worst failure mode an extraction tool has, because
-  the output looks complete. A bubble that cannot be read is now emitted as
-  an `illegible` row at its location on the sheet, so all 24 are always
-  accounted for.
+  the output looks complete. A bubble that cannot be read in full is now
+  emitted as an `illegible` row at its location, carrying whichever half of
+  the tag did come through. Note *in full*: the first version of this check
+  only fired when neither the function code nor the loop number was read,
+  and those four bubbles stayed missing — a lone `ZSO` with no loop number
+  matches no tag pattern downstream and vanishes just as quietly. Both
+  halves are required.
 - **23 of the 43 exported rows were not instruments** — `E1550` from the
   spec code in `8"-G-0331-8E1550`, `BD-0038` from the valve number
   `03-BD-0038`, and so on. The tag patterns were matching *inside* longer

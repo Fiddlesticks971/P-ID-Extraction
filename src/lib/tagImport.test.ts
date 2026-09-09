@@ -326,3 +326,39 @@ describe("pattern anchoring", () => {
     );
   });
 });
+
+describe("bubble reads win over whole-page reads of the same symbol", () => {
+  /** Both passes read one bubble; the page pass reports higher confidence. */
+  function bothPasses(): OcrWord[] {
+    const at = (text: string, y: number, origin: "bubble" | "page", confidence: number): OcrWord => ({
+      text, confidence, page: 1, origin,
+      bbox: { x0: 3543, y0: y, x1: 3611, y1: y + 34 },
+    });
+    return [
+      at("AOV", 2129, "bubble", 74),
+      at("1321A", 2171, "bubble", 74),
+      at("AOV", 2130, "page", 92),
+      at("1321A", 2172, "page", 92),
+    ];
+  }
+
+  it("keeps the bubble candidate even when the page read is more confident", () => {
+    // Tesseract's confidence knows nothing about the bubble pass having
+    // re-rendered the crop and masked the connector lines away. Letting it
+    // decide dropped the tag out of cross-sheet reconciliation, which only
+    // trusts bubble reads — five corrections were silently lost this way.
+    const got = extractTagCandidates(bothPasses(), DEFAULT_PATTERNS, 0.8);
+    expect(got).toHaveLength(1);
+    expect(got[0]).toMatchObject({ text: "AOV-1321A", origin: "bubble" });
+  });
+
+  it("still keeps page text that no bubble read covers", () => {
+    const words: OcrWord[] = [
+      ...bothPasses(),
+      { text: "SI-9701", confidence: 80, page: 1, origin: "page",
+        bbox: { x0: 6255, y0: 1798, x1: 6340, y1: 1818 } },
+    ];
+    const got = extractTagCandidates(words, DEFAULT_PATTERNS, 0.8).map((c) => c.text).sort();
+    expect(got).toEqual(["AOV-1321A", "SI-9701"]);
+  });
+});
