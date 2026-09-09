@@ -19,12 +19,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # Requires Pages to be enabled once by hand:
+      #   Settings -> Pages -> Build and deployment -> Source: GitHub Actions
+      # The workflow token is not allowed to create the Pages site itself
+      # ("Resource not accessible by integration"), so this cannot be
+      # automated from here.
       - uses: actions/checkout@v4
-      # Turns Pages on for the repo if it isn't already, so no manual
-      # settings step is needed before the first deploy.
-      - uses: actions/configure-pages@v5
-        with:
-          enablement: true
       - uses: actions/setup-node@v4
         with:
           node-version: 22
