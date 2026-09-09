@@ -11,6 +11,10 @@ export interface CircleDetectOptions {
    * failing to detect anything.
    */
   downsample?: number;
+  /** Overrides for the accept thresholds; see the constants below. */
+  voteFraction?: number;
+  coverageThreshold?: number;
+  maxInteriorInk?: number;
 }
 
 /** Default/max downsample factor when none is explicitly requested (matches the validated default). */
@@ -32,14 +36,29 @@ function autoDownsample(minRadius: number): number {
 const RADIUS_STEP = 1;
 /** Coarse non-max-suppression bucket size (downsampled px) within one radius layer. */
 const NMS_BUCKET = 4;
-/** Vote count required, as a fraction of a full circle's circumference (in edge-pixel votes). */
-const VOTE_FRACTION = 0.28;
+/**
+ * Vote count required, as a fraction of a full circle's circumference (in
+ * edge-pixel votes). Kept low enough to catch bubbles whose circle is drawn
+ * as a broken arc where it meets a neighbour — at 0.28 four such bubbles on
+ * the test drawing were missed entirely. The interior-ink check below is
+ * what keeps the extra sensitivity from admitting false positives.
+ */
+const VOTE_FRACTION = 0.2;
 /** Global NMS: candidates whose centers are closer than this multiple of the larger radius are merged. */
 const NMS_DISTANCE_FACTOR = 1.2;
 /** Fraction of sampled circumference points that must be dark for a candidate to be accepted as a real circle (rejects false peaks from round letterforms etc). */
 const COVERAGE_THRESHOLD = 0.45;
 const COVERAGE_SAMPLES = 48;
 const DARK_THRESHOLD = 170;
+/**
+ * Maximum share of the circle's interior that may be inked. A bubble holds
+ * one or two short lines of text on white; the dense blobs that the vote
+ * threshold alone lets through — a logo, bold title-block lettering — are
+ * far darker inside. Measured on a real drawing: 24 genuine bubbles ran
+ * 0.12-0.20, the false positives 0.27-0.79.
+ */
+const MAX_INTERIOR_INK = 0.25;
+const INTERIOR_RADIUS_FRACTION = 0.72;
 
 interface RawCircle {
   cx: number;
@@ -65,6 +84,9 @@ export function detectCircles(
   options: CircleDetectOptions,
 ): DetectedCircle[] {
   const ds = options.downsample ?? autoDownsample(options.minRadius);
+  const voteFraction = options.voteFraction ?? VOTE_FRACTION;
+  const coverageThreshold = options.coverageThreshold ?? COVERAGE_THRESHOLD;
+  const maxInteriorInk = options.maxInteriorInk ?? MAX_INTERIOR_INK;
   const w = Math.floor(source.width / ds);
   const h = Math.floor(source.height / ds);
   if (w < 4 || h < 4) return [];
@@ -168,7 +190,7 @@ export function detectCircles(
 
   for (let r = minR; r <= maxR; r += RADIUS_STEP) {
     acc.fill(0);
-    const voteThreshold = Math.round(2 * Math.PI * r * VOTE_FRACTION);
+    const voteThreshold = Math.round(2 * Math.PI * r * voteFraction);
     let hotCount = 0;
 
     for (let e = 0; e < edgeCount; e++) {
@@ -246,6 +268,25 @@ export function detectCircles(
     return false;
   }
 
+  /** Share of the disk inside the stroke that is inked. */
+  function interiorInk(c: RawCircle): number {
+    const rIn = Math.max(1, Math.round(c.r * INTERIOR_RADIUS_FRACTION));
+    const rInSq = rIn * rIn;
+    let inside = 0;
+    let inked = 0;
+    for (let dy = -rIn; dy <= rIn; dy++) {
+      for (let dx = -rIn; dx <= rIn; dx++) {
+        if (dx * dx + dy * dy > rInSq) continue;
+        const px = c.cx + dx;
+        const py = c.cy + dy;
+        if (px < 0 || px >= w || py < 0 || py >= h) continue;
+        inside++;
+        if (gray[py * w + px] < DARK_THRESHOLD) inked++;
+      }
+    }
+    return inside > 0 ? inked / inside : 0;
+  }
+
   const verified: RawCircle[] = [];
   for (const c of nmsAccepted) {
     let hits = 0;
@@ -255,7 +296,9 @@ export function detectCircles(
       const sy = c.cy + Math.sin(theta) * c.r;
       if (isDarkNear(sx, sy)) hits++;
     }
-    if (hits / COVERAGE_SAMPLES >= COVERAGE_THRESHOLD) verified.push(c);
+    if (hits / COVERAGE_SAMPLES < coverageThreshold) continue;
+    if (interiorInk(c) > maxInteriorInk) continue;
+    verified.push(c);
   }
 
   return verified.map((c) => ({

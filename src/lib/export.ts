@@ -13,8 +13,18 @@ const COLUMNS = [
   "Confidence %",
   "Verified",
   "Source",
+  "Center X",
+  "Center Y",
+  "Width",
+  "Height",
 ] as const;
 
+/**
+ * Positions are in page-raster pixels at the OCR render scale the run used,
+ * matching the highlight boxes on screen. They make two exports of the same
+ * drawing diffable — without them a tag can only be matched by its text,
+ * which is exactly what differs when OCR misreads something.
+ */
 function tagRow(tag: Tag): Record<(typeof COLUMNS)[number], string | number> {
   return {
     Tag: tag.text,
@@ -27,6 +37,10 @@ function tagRow(tag: Tag): Record<(typeof COLUMNS)[number], string | number> {
     "Confidence %": Math.round(tag.confidence),
     Verified: tag.confirmed ? "Yes" : "No",
     Source: tag.source,
+    "Center X": Math.round((tag.bbox.x0 + tag.bbox.x1) / 2),
+    "Center Y": Math.round((tag.bbox.y0 + tag.bbox.y1) / 2),
+    Width: Math.round(tag.bbox.x1 - tag.bbox.x0),
+    Height: Math.round(tag.bbox.y1 - tag.bbox.y0),
   };
 }
 
