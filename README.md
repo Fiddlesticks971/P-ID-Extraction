@@ -300,7 +300,12 @@ figures.
 | Single upscaled raster crop | 5/24 |
 | Vector re-render + two views + field voting | 12/24 |
 | + cross-sheet reconciliation, as first shipped | 14/24 |
-| **+ bubble reads winning the dedupe (current)** | **19/24** |
+| + bubble reads winning the dedupe | 15/24 |
+| **+ inferring a suffix nothing read (current)** | **17/24** |
+
+Those are four separate real browser runs, not one measurement re-cut. All
+24 bubbles are always accounted for now: 17 read exactly, 6 returned as
+`illegible` with whatever partial reading came through, and 1 misread.
 
 The last row is the fix for what the raw OCR gets wrong, and it does not
 depend on OCR getting better. A P&ID repeats itself: a loop number is
@@ -314,11 +319,33 @@ edit distance actively destroys good data here: **`1321` and `1321A` are two
 different loops that both exist on this drawing**, and "snap to the most
 common value" turns a correctly-read `1321A` into `1321`. So a suffix letter
 is never deleted; what is allowed is recovering a suffix read as a trailing
-digit (`13217` → `1321A`, and only when some tag on the sheet actually reads
-`1321A`), a confusable digit swap in the stem (`1327` → `1321`), and a
-dropped stem digit (`378A` → `1378A`). Function codes are matched against a
-dictionary of codes P&IDs actually use, which is what turns `AQV` back into
-`AOV`.
+digit (`13217` → `1321A`), a confusable digit swap in the stem
+(`1327` → `1321`), and a dropped stem digit (`378A` → `1378A`). Function
+codes are matched against a dictionary of codes P&IDs actually use, which
+is what turns `AQV` back into `AOV`.
+
+The suffix case needed one more step than expected. It originally required
+the suffix to be *observed* somewhere on the sheet, so that the letter was
+copied rather than invented — but the user's fourth run showed the trailing
+`A` of loop 1321A coming out as `7` on all three bubbles carrying it and as
+`4` on the fourth. There was no correct reading anywhere to copy from. So a
+suffix is now also **inferred**, under conditions narrow enough that the
+answer is forced rather than guessed:
+
+- the reading is all digits and exactly one longer than the sheet's own loop
+  length;
+- dropping its last digit leaves a stem several nearby bubbles share;
+- that last digit is confusable with **exactly one** letter. `7` and `4` are
+  each only ever an `A`, so the answer is determined. `0` (`O` or `Q`) and
+  `1` (`I` or `T`) are ambiguous, and are left alone.
+
+Working out "the sheet's own loop length" has its own trap: counting tags
+lets a systematic misread outvote the truth, since OCR misreads a glyph the
+same way every time — three bubbles reading `13217` is one error made three
+times, not corroboration. The count therefore uses *distinct* stems, and
+ignores any stem that is one character longer than another stem already
+present, because `13217` alongside `1321` is derivative rather than
+independent evidence.
 
 Every correction is a **suggestion, not an assertion**: the tag stays
 `uncertain`, and its Notes record what it was read as and why it was
@@ -375,11 +402,17 @@ so they aren't in the code:
 
 Remaining known limitations:
 
-- Of the 24 bubbles on the test drawing, 19 read exactly, 4 come back as
-  `illegible` (detected, unreadable — they need typing in by hand), and 1
-  (`ZSC-1378A`) is misread as `A-1378` and is not recoverable by
-  reconciliation. Expect to review every tag; this is a first pass, not an
+- Of the 24 bubbles on the test drawing, 17 read exactly, 6 come back as
+  `illegible` (detected, partially read — they need finishing by hand, and
+  now carry their likely loop number), and 1 (`BDV-1378A`) is misread as
+  `BDV-1378`. Expect to review every tag; this is a first pass, not an
   answer.
+- A suffix that OCR drops **entirely** cannot be recovered. `BDV-1378A` read
+  as `BDV-1378` is left alone on purpose: adding an `A` because neighbours
+  have one is exactly the reasoning that would corrupt the genuinely
+  suffix-less `1321` on this same sheet, where `1321` and `1321A` both
+  exist. A suffix misread as a digit is recoverable; a suffix that was never
+  there is a guess.
 - Reconciliation needs the sheet to repeat itself. On a drawing with only
   one device per loop there is nothing to cross-check against, and it will
   correct nothing.

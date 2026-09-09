@@ -142,6 +142,84 @@ describe("reconcileTags", () => {
     expect(textOf(tags, "p")).toBe("SVO-13217");
   });
 
+  it("infers a suffix that no bubble on the sheet read correctly", () => {
+    // The real case: every bubble on loop 1321A read the trailing A as a
+    // digit, so there was no correct reading to copy from. 7 and 4 are each
+    // confusable with exactly one letter, so the answer is determined.
+    const allMisread = [
+      bubble("m1", "SVO-13217", 3306, 2160),
+      bubble("m2", "ZSC-13217", 3417, 2157),
+      bubble("m3", "AOV-13214", 3576, 2169),
+      // The four-digit loop next door establishes the sheet's convention.
+      bubble("n1", "SVO-1321", 3306, 2766),
+      bubble("n2", "ZSC-1321", 3417, 2769),
+      bubble("n3", "AOV-1321", 3576, 2778),
+      bubble("n4", "PDIT-1321", 3825, 2010),
+    ];
+    const { tags } = reconcileTags(allMisread);
+    expect(textOf(tags, "m1")).toBe("SVO-1321A");
+    expect(textOf(tags, "m2")).toBe("ZSC-1321A");
+    expect(textOf(tags, "m3")).toBe("AOV-1321A");
+    // The genuine four-digit loop is untouched.
+    for (const id of ["n1", "n2", "n3", "n4"]) {
+      expect(textOf(tags, id)).toBe(allMisread.find((t) => t.id === id)!.text);
+    }
+  });
+
+  it("does not treat a repeated systematic misread as corroboration", () => {
+    // Three bubbles reading "13217" is one OCR error made three times, not
+    // evidence that 13217 is a real loop — OCR misreads a glyph the same
+    // way every time. The support gate must not protect it.
+    const { corrections } = reconcileTags([
+      bubble("a1", "SVO-13217", 3306, 2160),
+      bubble("a2", "ZSC-13217", 3417, 2157),
+      bubble("a3", "AOV-13217", 3576, 2169),
+      bubble("b1", "SVO-1321", 3306, 2766),
+      bubble("b2", "ZSC-1321", 3417, 2769),
+      bubble("b3", "PDIT-1321", 3825, 2010),
+    ]);
+    expect(corrections).toHaveLength(3);
+  });
+
+  it("will not guess between two equally likely letters", () => {
+    // 0 is confusable with both O and Q, so there is no determined answer.
+    const { tags } = reconcileTags([
+      bubble("q", "SVO-13210", 3306, 2160),
+      bubble("r1", "SVO-1321", 3306, 2766),
+      bubble("r2", "ZSC-1321", 3417, 2769),
+      bubble("r3", "PDIT-1321", 3825, 2010),
+    ]);
+    expect(textOf(tags, "q")).toBe("SVO-13210");
+  });
+
+  it("leaves a five-digit reading alone when the sheet's loops are five digits", () => {
+    const { tags } = reconcileTags([
+      bubble("f", "SVO-13217", 3306, 2160),
+      bubble("g1", "SVO-13210", 3306, 2766),
+      bubble("g2", "ZSC-13211", 3417, 2769),
+      bubble("g3", "PDIT-13212", 3825, 2010),
+    ]);
+    expect(textOf(tags, "f")).toBe("SVO-13217");
+  });
+
+  it("improves an unreadable bubble's loop hint without calling it readable", () => {
+    const placeholder: Tag = {
+      ...bubble("p1", "SVO-13214", 3417, 2067),
+      text: "?-13214", functionCode: "", loopNumber: "13214", suffix: "",
+      state: "illegible", type: "Unreadable bubble",
+    };
+    const { tags } = reconcileTags([
+      placeholder,
+      bubble("s1", "SVO-1321", 3306, 2766),
+      bubble("s2", "ZSC-1321", 3417, 2769),
+      bubble("s3", "PDIT-1321", 3825, 2010),
+    ]);
+    const out = tags.find((t) => t.id === "p1")!;
+    expect(out.text).toBe("?-1321A");
+    // A better guess at the loop does not make the bubble read.
+    expect(out.state).toBe("illegible");
+  });
+
   it("does not correct across the sheet from an unrelated cluster", () => {
     const far = [
       bubble("far", "ZSO-13217", 200, 200),

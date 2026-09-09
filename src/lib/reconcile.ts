@@ -56,6 +56,27 @@ function isConfusable(a: string, b: string): boolean {
   return a === b || CONFUSABLE_SET.has(`${a}${b}`);
 }
 
+/**
+ * The letters a digit is routinely misread as. Used to recover a suffix
+ * that *no* bubble on the sheet read correctly: on the validation drawing
+ * the trailing `A` of loop 1321A came out as `7` on all three bubbles that
+ * carry it and as `4` on the fourth, so there was never a correct reading
+ * to copy from.
+ *
+ * This only ever fires when the answer is unique. `7` and `4` are each
+ * confusable with exactly one letter (`A`), so the inference is
+ * determined; `0` (O or Q) and `1` (I or T) are ambiguous and are left
+ * alone rather than guessed between.
+ */
+function lettersConfusableWith(digit: string): string[] {
+  const letters = new Set<string>();
+  for (const [a, b] of CONFUSABLE) {
+    if (a === digit && /[A-Z]/.test(b)) letters.add(b);
+    if (b === digit && /[A-Z]/.test(a)) letters.add(a);
+  }
+  return [...letters];
+}
+
 /** Splits a loop token into its digit stem and trailing letter suffix. */
 export function splitToken(token: string): { stem: string; suffix: string } {
   const m = /^(\d*)([A-Z]*)$/.exec(token);
@@ -105,7 +126,13 @@ function oneInsertion(short: string, long: string): boolean {
  *  - a dropped digit inside the stem (`378A` -> `1378A`), suffix intact;
  *  - a confusable swap of the suffix letter itself, stem unchanged.
  */
-export type CorrectionKind = "stem-substitution" | "suffix-recovered" | "stem-insertion" | "suffix-substitution";
+export type CorrectionKind =
+  | "stem-substitution"
+  | "suffix-recovered"
+  | "stem-insertion"
+  | "suffix-substitution"
+  /** A suffix letter inferred from a trailing digit that no bubble read correctly. */
+  | "suffix-inferred";
 
 export function correctionKind(from: string, to: string): CorrectionKind | null {
   if (from === to) return null;
@@ -172,6 +199,11 @@ export interface Correction {
   reason: string;
 }
 
+/** The stem of a token, for the inferred-suffix explanation. */
+function trimmedNote(token: string): string {
+  return token.slice(0, -1);
+}
+
 function centerOf(tag: Tag): [number, number] {
   return [(tag.bbox.x0 + tag.bbox.x1) / 2, (tag.bbox.y0 + tag.bbox.y1) / 2];
 }
@@ -181,7 +213,10 @@ function loopToken(tag: Tag): string {
 }
 
 function rebuildText(func: string, loop: string, suffix: string): string {
-  return loop ? `${func}-${loop}${suffix}` : func;
+  // A placeholder for an unreadable bubble has no function code; keep its
+  // "?-1321A" shape rather than emitting a tag that starts with a dash.
+  if (!loop) return func;
+  return `${func || "?"}-${loop}${suffix}`;
 }
 
 /**
@@ -202,7 +237,7 @@ export function reconcileTags(
   const loopSupport = new Map<string, number>();
   /** Support for the digit stem alone, pooling 1321 and 1321A. */
   const stemSupport = new Map<string, number>();
-  const stemLengths = new Map<number, number>();
+  const stemLengths = new Map<number, Set<string>>();
   for (const tag of subjects) {
     const token = loopToken(tag);
     if (!token) continue;
@@ -210,7 +245,20 @@ export function reconcileTags(
     const { stem } = splitToken(token);
     if (!stem) continue;
     stemSupport.set(stem, (stemSupport.get(stem) ?? 0) + 1);
-    stemLengths.set(stem.length, (stemLengths.get(stem.length) ?? 0) + 1);
+  }
+  // Work out the sheet's own loop-number length, counting *distinct* stems
+  // rather than tags, and ignoring stems that are one character longer than
+  // another stem already present. Those are derivative: "13217" alongside
+  // "1321" is far more likely to be 1321 with a misread suffix than an
+  // independent five-digit loop, and counting it as evidence lets the very
+  // error this pass exists to fix redefine the convention and protect
+  // itself. On the validation drawing the trailing A came out as both "7"
+  // and "4", so even counting distinct stems was not enough on its own.
+  for (const stem of stemSupport.keys()) {
+    if (stem.length > 1 && stemSupport.has(stem.slice(0, -1))) continue;
+    const byLength = stemLengths.get(stem.length) ?? new Set<string>();
+    byLength.add(stem);
+    stemLengths.set(stem.length, byLength);
   }
 
   // How long a loop number is on *this* sheet. A token that disagrees with
@@ -218,8 +266,14 @@ export function reconcileTags(
   // any comparison — which is why it needs less corroboration to correct.
   let modalStemLength = 0;
   let modalCount = 0;
-  for (const [length, count] of stemLengths) {
-    if (count > modalCount) { modalCount = count; modalStemLength = length; }
+  for (const [length, stems] of stemLengths) {
+    // Ties go to the shorter length: the misreads this pass exists to fix
+    // append a character (a suffix letter read as a digit), so the longer
+    // candidate is the suspect one.
+    if (stems.size > modalCount || (stems.size === modalCount && length < modalStemLength)) {
+      modalCount = stems.size;
+      modalStemLength = length;
+    }
   }
 
   const corrections: Correction[] = [];
@@ -235,11 +289,16 @@ export function reconcileTags(
     // --- Loop number, by cluster consensus ---
     const token = loopToken(tag);
     const own = loopSupport.get(token) ?? 0;
-    const ownStem = splitToken(token).stem;
+    const ownSplit = splitToken(token);
+    const ownStem = ownSplit.stem;
     const lengthAnomaly = ownStem.length > 0 && ownStem.length !== modalStemLength;
     // A token that already matches the sheet's convention and is echoed by
-    // other bubbles needs no help.
-    if (token && own <= options.weakSupport) {
+    // other bubbles needs no help. But repetition is only evidence when the
+    // token is structurally plausible: OCR misreads the same glyph the same
+    // way every time, so three bubbles all reading "13217" on a sheet whose
+    // loops are four digits is three instances of one systematic error, not
+    // corroboration. A length anomaly therefore overrides the support gate.
+    if (token && (own <= options.weakSupport || lengthAnomaly)) {
       const [cx, cy] = centerOf(tag);
       const margin = lengthAnomaly ? 1 : options.supportMargin;
       let best: { token: string; support: number; distance: number; kind: CorrectionKind } | null = null;
@@ -267,10 +326,41 @@ export function reconcileTags(
         }
       }
 
+      // Nothing on the sheet reads the suffix correctly? Infer it, but only
+      // when the shape of the token forces a single answer: an all-digit
+      // token exactly one longer than the sheet's own loop length, whose
+      // leading digits are a well-supported stem, ending in a digit that is
+      // confusable with exactly one letter.
+      if (!best && !ownSplit.suffix && ownStem.length === modalStemLength + 1) {
+        const trimmed = ownStem.slice(0, -1);
+        const dropped = ownStem[ownStem.length - 1];
+        const letters = lettersConfusableWith(dropped);
+        const stemEvidence = stemSupport.get(trimmed) ?? 0;
+        if (letters.length === 1 && stemEvidence >= options.supportMargin) {
+          const [cx2, cy2] = centerOf(tag);
+          let nearest = Infinity;
+          for (const other of subjects) {
+            if (splitToken(loopToken(other)).stem !== trimmed) continue;
+            const [ox, oy] = centerOf(other);
+            nearest = Math.min(nearest, Math.hypot(ox - cx2, oy - cy2));
+          }
+          if (nearest <= options.clusterRadius) {
+            best = {
+              token: `${trimmed}${letters[0]}`,
+              support: stemEvidence,
+              distance: nearest,
+              kind: "suffix-inferred",
+            };
+          }
+        }
+      }
+
       if (best) {
         const split = splitToken(best.token);
         notes.push(
-          `Loop read as "${token}"; corrected to "${best.token}" (${best.support} nearby bubbles on this loop). Verify against the drawing.`,
+          best.kind === "suffix-inferred"
+            ? `Loop read as "${token}". No bubble on this sheet read the suffix, but "${trimmedNote(token)}" is a ${best.support}-bubble loop here and a trailing "${token[token.length - 1]}" is a common misread of "${best.token[best.token.length - 1]}". Check this one against the drawing.`
+            : `Loop read as "${token}"; corrected to "${best.token}" (${best.support} nearby bubbles on this loop). Verify against the drawing.`,
         );
         corrections.push({
           tagId: tag.id,
@@ -314,8 +404,10 @@ export function reconcileTags(
       text: rebuildText(func, loop, suffix),
       loopGroup: loop ? `${loop}${suffix}` : tag.loopGroup,
       // A suggestion, not a verified reading: it stays in the review queue
-      // and carries what it was changed from.
-      state: "uncertain",
+      // and carries what it was changed from. A bubble whose tag could not
+      // be read stays "illegible" — a better guess at its loop number does
+      // not make it read.
+      state: tag.state === "illegible" ? "illegible" : "uncertain",
       notes: [tag.notes, ...notes].filter(Boolean).join(" "),
     });
   }

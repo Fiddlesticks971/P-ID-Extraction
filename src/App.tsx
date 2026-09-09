@@ -133,11 +133,13 @@ function buildTags(
 ): { tags: Tag[]; correctionCount: number } {
   const candidates = extractTagCandidates(words, settings.patterns, settings.groupStackedText);
   const extracted = candidatesToTags(candidates);
-  const { tags, corrections } = reconcileTags(extracted);
-  return {
-    tags: [...tags, ...unread.map((b) => unreadBubbleToTag(b, settings.reviewerName))],
-    correctionCount: corrections.length,
-  };
+  // Placeholders go through reconciliation too. Half a reading is still a
+  // reading: a bubble that yielded only "13784" is telling us its loop is
+  // very likely 1378A, and saying so turns "could not be read" into a much
+  // better starting point for whoever types it in.
+  const placeholders = unread.map((b) => unreadBubbleToTag(b, settings.reviewerName));
+  const { tags, corrections } = reconcileTags([...extracted, ...placeholders]);
+  return { tags, correctionCount: corrections.length };
 }
 
 function App() {
