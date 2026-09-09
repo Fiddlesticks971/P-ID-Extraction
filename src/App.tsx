@@ -11,6 +11,7 @@ import { recognizePages } from "./lib/ocr";
 import type { OcrProgress } from "./lib/ocr";
 import { extractTagCandidates, candidatesToTags } from "./lib/grouping";
 import { reconcileTags } from "./lib/reconcile";
+import { beginDrag, readStoredNumber, writeStoredNumber } from "./lib/dragResize";
 import type { UnreadBubble } from "./lib/ocr";
 import { DEFAULT_PATTERNS } from "./lib/tagPatterns";
 import { mergeSeedRows, parseSeedCsv } from "./lib/tagImport";
@@ -37,6 +38,23 @@ import "./index.css";
 
 type Status = "idle" | "rendering" | "ocr" | "grouping" | "ready" | "error";
 type PanelTab = "tags" | "drawing";
+
+/**
+ * Layout of the two panes. The drawing is the thing being verified, so it
+ * gets the leftover space, but how much of the window a reviewer wants to
+ * give it depends entirely on their screen and what they are doing —
+ * hence the draggable splitter. The minimums keep either pane from being
+ * dragged into uselessness.
+ */
+const SIDE_PANEL_DEFAULT_WIDTH = 640;
+const SIDE_PANEL_MIN_WIDTH = 300;
+const VIEWER_MIN_WIDTH = 320;
+const SIDE_PANEL_WIDTH_KEY = "pid.sidePanelWidth";
+
+function clampPanelWidth(width: number, windowWidth: number): number {
+  const max = Math.max(SIDE_PANEL_MIN_WIDTH, windowWidth - VIEWER_MIN_WIDTH);
+  return Math.min(max, Math.max(SIDE_PANEL_MIN_WIDTH, Math.round(width)));
+}
 
 // Each page is OCR'd twice (upright + rotated 90°) plus once more per
 // detected instrument bubble (see ocr.ts) at full drawing resolution,
@@ -164,6 +182,14 @@ function App() {
   const [ocrProgress, setOcrProgress] = useState<OcrProgress | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [importSummary, setImportSummary] = useState<string | null>(null);
+  // The width the reviewer actually asked for, kept separate from the
+  // width that currently fits. Clamping the stored value in place would
+  // mean a narrow window permanently shrinks their preference — widen the
+  // window again and the panel should come back to where they put it.
+  const [panelWidthPref, setPanelWidthPref] = useState(() =>
+    readStoredNumber(SIDE_PANEL_WIDTH_KEY, SIDE_PANEL_DEFAULT_WIDTH),
+  );
+  const [windowWidth, setWindowWidth] = useState(() => window.innerWidth);
   const documentRef = useRef<LoadedDocument | null>(null);
   const sourceFileRef = useRef<File | null>(null);
   const seedInputRef = useRef<HTMLInputElement>(null);
@@ -195,6 +221,34 @@ function App() {
     // eslint-disable-next-line react/set-state-in-effect
     void refreshLibrary();
   }, [refreshLibrary]);
+
+  useEffect(() => {
+    function onResize() {
+      setWindowWidth(window.innerWidth);
+    }
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // What actually fits right now.
+  const sidePanelWidth = clampPanelWidth(panelWidthPref, windowWidth);
+
+  function startSplitDrag(e: React.MouseEvent) {
+    const startWidth = sidePanelWidth;
+    beginDrag(e, {
+      // The panel is on the right, so dragging left widens it.
+      onMove: ({ dx }) => setPanelWidthPref(clampPanelWidth(startWidth - dx, window.innerWidth)),
+      onEnd: () => setPanelWidthPref((w) => {
+        writeStoredNumber(SIDE_PANEL_WIDTH_KEY, w);
+        return w;
+      }),
+    });
+  }
+
+  function resetSplit() {
+    setPanelWidthPref(SIDE_PANEL_DEFAULT_WIDTH);
+    writeStoredNumber(SIDE_PANEL_WIDTH_KEY, SIDE_PANEL_DEFAULT_WIDTH);
+  }
 
   function resetDrawingState(name: string) {
     setFileName(name);
@@ -534,7 +588,16 @@ function App() {
           addMode={addMode}
           onAddTagAt={addTagAt}
         />
-        <div className="side-panel">
+        <div
+          className="split-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize the drawing view"
+          title="Drag to resize the drawing view — double-click to reset"
+          onMouseDown={startSplitDrag}
+          onDoubleClick={resetSplit}
+        />
+        <div className="side-panel" style={{ width: sidePanelWidth }}>
           <div className="panel-tabs">
             <button
               className={panelTab === "tags" ? "active" : ""}

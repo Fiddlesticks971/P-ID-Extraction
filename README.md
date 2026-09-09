@@ -35,9 +35,13 @@ to a server.
   vertical instrument tags next to horizontal lines that a horizontal-only
   pass misses completely.
 - **Verification overlay** — every detected tag is drawn as a highlighted
-  box on the drawing (amber = unverified, green = verified) so you can
-  visually confirm it against the source P&ID. Click a box or a table row
-  to select/scroll to the other.
+  box on the drawing (amber = unverified, green = verified, dashed red =
+  illegible) so you can visually confirm it against the source P&ID. Click
+  a box or a table row to select/scroll to the other.
+- **Resizable drawing view** — drag the splitter between the drawing and
+  the review panel to give either side more room; double-click it to reset.
+  The width is remembered in the browser. Narrowing the window shrinks the
+  panel to fit and widening it again restores the width you chose.
 - **Instrument-index data model** — every tag carries the fields an
   instrument index or CMMS import actually needs: ISA function, description,
   loop/group, line or parent equipment, panel, size, fail position, notes,

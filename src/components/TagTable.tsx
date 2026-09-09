@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ReviewState, Tag } from "../types";
 import { REVIEW_STATES } from "../types";
+import { beginDrag } from "../lib/dragResize";
 
 interface TagTableProps {
   tags: Tag[];
@@ -79,26 +80,13 @@ export function TagTable({
   const [columnWidths, setColumnWidths] = useState<number[]>(COLUMNS.map((c) => c.width));
 
   function startColumnResize(index: number, e: React.MouseEvent) {
-    e.preventDefault();
-    e.stopPropagation();
-    const startX = e.clientX;
     const startWidth = columnWidths[index];
-
-    function onMouseMove(moveEvent: MouseEvent) {
-      const nextWidth = Math.max(MIN_COLUMN_WIDTH, startWidth + (moveEvent.clientX - startX));
-      setColumnWidths((prev) => prev.map((w, i) => (i === index ? nextWidth : w)));
-    }
-    function onMouseUp() {
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-      document.body.style.removeProperty("cursor");
-      document.body.style.removeProperty("user-select");
-    }
-
-    document.body.style.setProperty("cursor", "col-resize");
-    document.body.style.setProperty("user-select", "none");
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
+    beginDrag(e, {
+      onMove: ({ dx }) => {
+        const nextWidth = Math.max(MIN_COLUMN_WIDTH, startWidth + dx);
+        setColumnWidths((prev) => prev.map((w, i) => (i === index ? nextWidth : w)));
+      },
+    });
   }
 
   const loopGroups = useMemo(() => distinct(tags, "loopGroup"), [tags]);

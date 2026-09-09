@@ -747,3 +747,43 @@ button.link {
   text-decoration: underline;
   cursor: pointer;
 }
+
+/* Splitter between the drawing and the review panel.
+   The hit area is deliberately wider than the visible line — a 1px target
+   is miserable to grab — so the handle is 9px wide with a centred rule. */
+.split-handle {
+  flex: 0 0 9px;
+  cursor: col-resize;
+  position: relative;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+.split-handle::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 3px;
+  height: 28px;
+  border-radius: 2px;
+  background: var(--border);
+}
+.split-handle:hover,
+.split-handle:active {
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg));
+}
+.split-handle:hover::before,
+.split-handle:active::before {
+  background: var(--accent);
+}
+
+/* The viewer keeps its own border; the splitter supplies the divider now. */
+.viewer {
+  border-right: none;
+  min-width: 0;
+}
+.side-panel {
+  min-width: 0;
+}
